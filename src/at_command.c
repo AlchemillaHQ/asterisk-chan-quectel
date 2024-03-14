@@ -329,14 +329,14 @@ int at_enqueue_initialization_quectel(struct cpvt* cpvt, unsigned int dsci)
 
     const at_queue_cmd_t cmds[] = {
         ATQ_CMD_DECLARE_STI(CMD_AT_QCCID, qccid),
-        ATQ_CMD_DECLARE_STI(CMD_AT_QTONEDET_1, qtonedet_1),
+        //ATQ_CMD_DECLARE_STI(CMD_AT_QTONEDET_1, qtonedet_1),
         ATQ_CMD_DECLARE_ST(CMD_AT_CVOICE, qpcmv), /* read the current voice mode, and return sampling rate、data bit、frame period */
-        ccinfo_cmds[dsci ? 2 : 3],
+        //ccinfo_cmds[dsci ? 2 : 3],
         ccinfo_cmds[dsci ? 1 : 0],
         ATQ_CMD_DECLARE_ST(CMD_AT_QINDCFG_CSQ, qindcfg_csq),
         ATQ_CMD_DECLARE_ST(CMD_AT_QINDCFG_ACT, qindcfg_act),
         ATQ_CMD_DECLARE_ST(CMD_AT_QINDCFG_RING, qindcfg_ring),
-        tonedet_cmds[dtmf ? 1 : 0],
+        //tonedet_cmds[dtmf ? 1 : 0],
         ATQ_CMD_DECLARE_ST(CMD_AT_CEREG_INIT, cereg_init),
         ATQ_CMD_DECLARE_ST(CMD_AT_FINAL, at),
     };
