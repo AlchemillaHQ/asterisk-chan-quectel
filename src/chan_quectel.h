@@ -18,6 +18,7 @@
 
 #include <asterisk/json.h>
 #include <asterisk/linkedlists.h>
+#include <asterisk/localtime.h>
 #include <asterisk/lock.h>
 #include <asterisk/strings.h>
 #include <asterisk/threadpool.h>
@@ -32,9 +33,10 @@
 #define MODULE_DESCRIPTION "Channel Driver for Mobile Telephony"
 #define MAXQUECTELDEVICES 128
 
-const char* attribute_const dev_state2str(dev_state_t state);
-dev_state_t attribute_const str2dev_state(const char*);
-const char* attribute_const dev_state2str_msg(dev_state_t state);
+const char* dev_state2str(dev_state_t state);
+const char* dev_state2str_capitalized(dev_state_t state);
+dev_state_t str2dev_state(const char*);
+const char* dev_state2str_msg(dev_state_t state);
 
 typedef enum {
     RESTATE_TIME_NOW = 0,
@@ -44,9 +46,6 @@ typedef enum {
 
 /* state */
 typedef struct pvt_state {
-    char audio_tty[DEVPATHLEN]; /*!< tty for audio connection */
-    char data_tty[DEVPATHLEN];  /*!< tty for AT commands */
-
     uint32_t at_tasks;                      /*!< number of active tasks in at_queue */
     uint32_t at_cmds;                       /*!< number of active commands in at_queue */
     uint32_t chansno;                       /*!< number of channels in channels list */
@@ -125,6 +124,9 @@ typedef struct pvt {
 
     /* SMS support */
     int incoming_sms_index;
+    int incoming_sms_type;
+
+    struct ast_tm module_time;
 
     // clang-format off
 	/* string fields */
@@ -143,7 +145,6 @@ typedef struct pvt {
 		AST_STRING_FIELD(band);
 		AST_STRING_FIELD(sms_scenter);
 		AST_STRING_FIELD(subscriber_number);
-		AST_STRING_FIELD(module_time);
 	);
     // clang-format on
 
@@ -196,10 +197,8 @@ typedef struct pvt {
 typedef struct public_state {
     AST_RWLIST_HEAD(devices, pvt) devices;
     struct ast_threadpool* threadpool;
-    ast_mutex_t discovery_lock;
-    pthread_t discovery_thread;  /* The discovery thread handler */
-    volatile int unloading_flag; /* no need mutex or other locking for protect this variable because no concurent r/w
-                                    and set non-0 atomically */
+    pthread_t dev_manager_thread;
+    int dev_manager_event;
     struct dc_gconfig global_settings;
 } public_state_t;
 
@@ -239,10 +238,16 @@ static inline struct pvt* pvt_find(const char* name) { return pvt_find_ex(gpubli
 
 struct pvt* pvt_find_by_ext(const char* name);
 struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists);
+struct pvt* pvt_msg_find_by_resource_ex(struct public_state* state, const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists);
 
 static inline struct pvt* pvt_find_by_resource(const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists)
 {
     return pvt_find_by_resource_ex(gpublic, resource, opts, requestor, exists);
+}
+
+static inline struct pvt* pvt_msg_find_by_resource(const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists)
+{
+    return pvt_msg_find_by_resource_ex(gpublic, resource, opts, requestor, exists);
 }
 
 struct cpvt* pvt_channel_find_by_call_idx(struct pvt* pvt, int call_idx);

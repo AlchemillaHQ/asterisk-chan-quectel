@@ -47,21 +47,22 @@ static const unsigned int CLCC_CALL_TYPE_FAX = 2;
 static const char MANUFACTURER_QUECTEL[] = "Quectel";
 static const char MANUFACTURER_SIMCOM[]  = "SimCom";
 
-static const int DST_DEF_LEN = 32;
+static const int DST_DEF_LEN       = 32;
+static const size_t AST_TM_MAX_LEN = 64;
 
 // ================================================================
 
 static const at_response_t at_responses_list[] = {
 
     AT_RESPONSES_TABLE(AT_RES_AS_STRUCTLIST)
-
-  /* The hackish way to define the duplicated responses in the meantime */
+/* clang-format off */
+    /* The hackish way to define the duplicated responses in the meantime */
 #define DEF_STR(str) str, STRLEN(str)
-        {RES_CNUM,  "+CNUM", DEF_STR("ERROR+CNUM:")          },
+    {RES_CNUM,  "+CNUM", DEF_STR("ERROR+CNUM:")          },
     {RES_ERROR, "ERROR", DEF_STR("COMMAND NOT SUPPORT\r")},
 #undef DEF_STR
+    /* clang-format on */
 };
-
 
 const at_responses_t at_responses = {at_responses_list, 3, ARRAY_LEN(at_responses_list), RES_MIN, RES_MAX};
 
@@ -142,73 +143,6 @@ static void request_clcc(struct pvt* pvt)
 }
 
 static int at_response_cmgs_error(struct pvt*, const at_queue_task_t* const);
-
-#ifdef HANDLE_RCEND
-static int at_response_rcend(struct pvt* pvt)
-{
-    int call_index        = 0;
-    unsigned int duration = 0;
-    int end_status        = 0;
-    int cc_cause          = 0;
-    struct cpvt* cpvt;
-
-    cpvt = active_cpvt(pvt);
-    if (cpvt) {
-        if (CPVT_IS_SOUND_SOURCE(cpvt)) {
-            at_enqueue_cpcmreg(&pvt->sys_chan, 0);
-        }
-        call_index = cpvt->call_idx;
-        ast_debug(1, "[%s] CEND: call_index %d duration %d end_status %d cc_cause %d Line disconnected\n", PVT_ID(pvt), call_index, duration, end_status,
-                  cc_cause);
-        CPVT_RESET_FLAG(cpvt, CALL_FLAG_NEED_HANGUP);
-        PVT_STAT(pvt, calls_duration[cpvt->dir]) += duration;
-        change_channel_state(cpvt, CALL_STATE_RELEASED, cc_cause);
-    }
-
-    return 0;
-}
-#endif
-
-#ifdef HANDLE_CEND
-static int at_response_cend(struct pvt* const pvt, const char* str)
-{
-    int call_index = 0;
-    int duration   = 0;
-    int end_status = 0;
-    int cc_cause   = 0;
-    struct cpvt* cpvt;
-
-    request_clcc(pvt);
-
-    /*
-     * parse CEND info in the following format:
-     * ^CEND:<call_index>,<duration>,<end_status>[,<cc_cause>]
-     */
-
-    if (sscanf(str, "VOICE CALL: END: %d", &duration) != 1) {
-        ast_debug(1, "[%s] Could not parse all CEND parameters\n", PVT_ID(pvt));
-        return 0;
-    }
-
-    ast_debug(1, "[%s] CEND: call_index %d duration %d end_status %d cc_cause %d Line disconnected\n", PVT_ID(pvt), call_index, duration, end_status, cc_cause);
-
-
-    cpvt = active_cpvt(pvt);
-    if (cpvt) {
-        at_enqueue_cpcmreg(&pvt->sys_chan, 0);
-        call_index = cpvt->call_idx;
-        ast_debug(1, "[%s] CEND: call_index %d duration %d end_status %d cc_cause %d Line disconnected\n", PVT_ID(pvt), call_index, duration, end_status,
-                  cc_cause);
-        CPVT_RESET_FLAG(cpvt, CALL_FLAG_NEED_HANGUP);
-        PVT_STAT(pvt, calls_duration[cpvt->dir]) += duration;
-        change_channel_state(cpvt, CALL_STATE_RELEASED, cc_cause);
-    } else {
-        ast_log(LOG_ERROR, "[%s] CEND event for unknown call idx '%d'\n", PVT_ID(pvt), call_index);
-    }
-
-    return 0;
-}
-#endif
 
 static void __attribute__((format(printf, 7, 8))) at_ok_response_log(int level, const char* file, int line, const char* function, const struct pvt* const pvt,
                                                                      const at_queue_cmd_t* const ecmd, const char* const fmt, ...)
@@ -312,6 +246,7 @@ static int at_response_ok(struct pvt* const pvt, const at_res_t at_res, const at
             break;
 
         case CMD_AT_CREG:
+        case CMD_AT_CEREG:
             at_ok_response_dbg(1, pvt, ecmd, "Registration query sent");
             break;
 
@@ -362,7 +297,7 @@ static int at_response_ok(struct pvt* const pvt, const at_res_t at_res, const at
             break;
 
         case CMD_AT_CSSN:
-            at_ok_response_dbg(1, pvt, ecmd, "Supplementary Service Notification enabled");
+            at_ok_response_dbg(1, pvt, ecmd, "Supplementary Service Notification disabled");
             break;
 
         case CMD_AT_CMGF:
@@ -378,11 +313,10 @@ static int at_response_ok(struct pvt* const pvt, const at_res_t at_res, const at
             break;
 
         case CMD_AT_CNMI:
+            pvt->has_sms = 1;
             if (!pvt->initialized) {
                 ast_debug(1, "[%s] SMS supported\n", PVT_ID(pvt));
                 at_ok_response_dbg(2, pvt, ecmd, "SMS indication mode configured");
-
-                pvt->has_sms = 1;
             } else {
                 at_ok_response_dbg(2, pvt, ecmd, "SMS indication mode configured");
                 ast_verb(2, "[%s] Message indication mode configured\n", PVT_ID(pvt));
@@ -782,7 +716,7 @@ static int at_response_error(struct pvt* const pvt, const at_res_t at_res, const
             /* fall through */
         case CMD_AT_D:
             at_err_response_err(pvt, ecmd, "Dial failed");
-            cpvt_control(task->cpvt, AST_CONTROL_CONGESTION);
+            cpvt_change_state(task->cpvt, CALL_STATE_RELEASED, AST_CAUSE_NORMAL_TEMPORARY_FAILURE);
             break;
 
         case CMD_AT_CPCMREG1:
@@ -1239,7 +1173,7 @@ static int at_response_clcc(struct pvt* const pvt, const struct ast_str* const r
     return 0;
 }
 
-static attribute_const unsigned int map_dsci(const unsigned int dsci)
+static unsigned int map_dsci(const unsigned int dsci)
 {
     switch (dsci) {
         case 3u:  // connect
@@ -1507,8 +1441,8 @@ static int at_response_cmgs(struct pvt* const pvt, const struct ast_str* const r
 
     RAII_VAR(struct ast_str*, dst, (partno == partcnt) ? ast_str_create(DST_DEF_LEN) : NULL, ast_free);
     RAII_VAR(struct ast_str*, msg, (partno == partcnt) ? ast_str_create(DST_DEF_LEN) : NULL, ast_free);
-    const ssize_t res = smsdb_outgoing_part_put(task->uid, refid, &dst, &msg);
-    if (res >= 0) {
+
+    if (!smsdb_outgoing_part_put(task->uid, refid, &dst, &msg)) {
         ast_verb(3, "[%s][SMS:%d %s] SMS: [%s]\n", PVT_ID(pvt), task->uid, ast_str_buffer(dst), ast_str_buffer(msg));
         RAII_VAR(struct ast_json*, report, ast_json_object_create(), ast_json_unref);
         ast_json_object_set(report, "info", ast_json_string_create("Message send"));
@@ -1528,8 +1462,7 @@ static int at_response_cmgs_error(struct pvt* const pvt, const at_queue_task_t* 
     RAII_VAR(struct ast_str*, dst, ast_str_create(DST_DEF_LEN), ast_free);
     RAII_VAR(struct ast_str*, msg, ast_str_create(DST_DEF_LEN), ast_free);
 
-    const ssize_t dst_len = smsdb_outgoing_clear(task->uid, &dst, &msg);
-    if (dst_len >= 0) {
+    if (!smsdb_outgoing_clear(task->uid, &dst, &msg)) {
         ast_verb(1, "[%s][SMS:%d] Error sending message: [%s]\n", PVT_ID(pvt), task->uid, ast_str_buffer(dst));
         RAII_VAR(struct ast_json*, report, ast_json_object_create(), ast_json_unref);
         ast_json_object_set(report, "info", ast_json_string_create("Error sending message"));
@@ -1567,7 +1500,7 @@ static int at_response_cmti(struct pvt* const pvt, const struct ast_str* const r
 
     ast_debug(1, "[%s][SMS:%d] New message\n", PVT_ID(pvt), idx);
 
-    if (at_enqueue_retrieve_sms(&pvt->sys_chan, idx)) {
+    if (at_enqueue_retrieve_sms(&pvt->sys_chan, idx, RES_CMTI)) {
         ast_log(LOG_ERROR, "[%s][SMS:%d] Could not read message\n", PVT_ID(pvt), idx);
         return -1;
     }
@@ -1600,9 +1533,9 @@ static int at_response_cdsi(struct pvt* const pvt, const struct ast_str* const r
         return 0;
     }
 
-    ast_debug(1, "[%s][SMS:%d] New message\n", PVT_ID(pvt), idx);
+    ast_debug(1, "[%s][SMS:%d] Message status report\n", PVT_ID(pvt), idx);
 
-    if (at_enqueue_retrieve_sms(&pvt->sys_chan, idx)) {
+    if (at_enqueue_retrieve_sms(&pvt->sys_chan, idx, RES_CDSI)) {
         ast_log(LOG_ERROR, "[%s][SMS:%d] Could not read message\n", PVT_ID(pvt), idx);
         return -1;
     }
@@ -1624,7 +1557,7 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
     static const ssize_t MSG_DEF_LEN = 64;
     static const ssize_t MSG_MAX_LEN = 4096;
 
-    char scts[64], dt[64];
+    struct ast_tm scts, dt;
     int mr, st;
     int res;
     int tpdu_type, idx;
@@ -1635,7 +1568,9 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
 
     pdu_udh_init(&udh);
 
-    scts[0] = dt[0] = '\000';
+    memset(&scts, 0, sizeof(scts));
+    memset(&dt, 0, sizeof(dt));
+
     RAII_VAR(struct ast_str*, msg, ast_str_create(MSG_MAX_LEN), ast_free);
     RAII_VAR(struct ast_str*, oa, ast_str_create(512), ast_free);
     RAII_VAR(struct ast_str*, sca, ast_str_create(512), ast_free);
@@ -1645,27 +1580,27 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
         case RES_CMGR:
         case RES_CLASS0:
             res = at_parse_cmgr(ast_str_buffer(response), ast_str_strlen(response), &tpdu_type, ast_str_buffer(sca), ast_str_size(sca), ast_str_buffer(oa),
-                                ast_str_size(oa), scts, &mr, &st, dt, ast_str_buffer(msg), &msg_len, &udh);
+                                ast_str_size(oa), &scts, &mr, &st, &dt, ast_str_buffer(msg), &msg_len, &udh);
             break;
 
         case RES_CMGL:
             res = at_parse_cmgl(ast_str_buffer(response), ast_str_strlen(response), &idx, &tpdu_type, ast_str_buffer(sca), ast_str_size(sca),
-                                ast_str_buffer(oa), ast_str_size(oa), scts, &mr, &st, dt, ast_str_buffer(msg), &msg_len, &udh);
+                                ast_str_buffer(oa), ast_str_size(oa), &scts, &mr, &st, &dt, ast_str_buffer(msg), &msg_len, &udh);
             break;
 
         case RES_CMT:
             res = at_parse_cmt(ast_str_buffer(response), ast_str_strlen(response), &tpdu_type, ast_str_buffer(sca), ast_str_size(sca), ast_str_buffer(oa),
-                               ast_str_size(oa), scts, &mr, &st, dt, ast_str_buffer(msg), &msg_len, &udh);
+                               ast_str_size(oa), &scts, &mr, &st, &dt, ast_str_buffer(msg), &msg_len, &udh);
             break;
 
         case RES_CBM:
             res = at_parse_cbm(ast_str_buffer(response), ast_str_strlen(response), &tpdu_type, ast_str_buffer(sca), ast_str_size(sca), ast_str_buffer(oa),
-                               ast_str_size(oa), scts, &mr, &st, dt, ast_str_buffer(msg), &msg_len, &udh);
+                               ast_str_size(oa), &scts, &mr, &st, &dt, ast_str_buffer(msg), &msg_len, &udh);
             break;
 
         case RES_CDS:
             res = at_parse_cds(ast_str_buffer(response), ast_str_strlen(response), &tpdu_type, ast_str_buffer(sca), ast_str_size(sca), ast_str_buffer(oa),
-                               ast_str_size(oa), scts, &mr, &st, dt, ast_str_buffer(msg), &msg_len, &udh);
+                               ast_str_size(oa), &scts, &mr, &st, &dt, ast_str_buffer(msg), &msg_len, &udh);
             break;
 
         default:
@@ -1685,8 +1620,7 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
             ast_verb(1, "[%s][SMS:%d] Got status report from %s and status code %d\n", PVT_ID(pvt), mr, ast_str_buffer(oa), st);
 
             RAII_VAR(int*, status_report, ast_calloc(sizeof(int), 256), ast_free);
-            const ssize_t pres = smsdb_outgoing_part_status(pvt->imsi, ast_str_buffer(oa), mr, st, status_report);
-            if (pres >= 0) {
+            if (!smsdb_outgoing_part_status(pvt->imsi, ast_str_buffer(oa), mr, st, status_report)) {
                 RAII_VAR(struct ast_json*, report, ast_json_object_create(), ast_json_unref);
                 ast_json_object_set(report, "info", ast_json_stringf("SMS Status"));
                 if (st) {
@@ -1705,7 +1639,7 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
                 msg_ack      = TRIBOOL_TRUE;
                 msg_ack_uid  = mr;
                 msg_complete = 1;
-                channel_start_local_report(pvt, "sms", LOCAL_REPORT_DIRECTION_INCOMING, ast_str_buffer(oa), scts, dt, success, report);
+                channel_start_local_report(pvt, "sms", LOCAL_REPORT_DIRECTION_INCOMING, ast_str_buffer(oa), &scts, &dt, success, report);
             }
 
             break;
@@ -1713,13 +1647,16 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
 
         case PDUTYPE_MTI_SMS_DELIVER: {
             RAII_VAR(struct ast_str*, fullmsg, ast_str_create(MSG_DEF_LEN), ast_free);
+            struct ast_str* scts_str = ast_str_alloca(AST_TM_MAX_LEN);
+            format_ast_tm(&scts, scts_str);
+
             if (udh.parts > 1) {
-                ast_verb(2, "[%s][SMS:%d PART:%d/%d TS:%s] Got message part from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, (int)udh.order, (int)udh.parts, scts,
-                         ast_str_buffer(oa), tmp_esc_str(msg));
+                ast_verb(2, "[%s][SMS:%d PART:%d/%d TS:%s] Got message part from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, (int)udh.order, (int)udh.parts,
+                         ast_str_buffer(scts_str), ast_str_buffer(oa), ast_str_buffer(msg));
                 int csms_cnt = smsdb_put(pvt->imsi, ast_str_buffer(oa), udh.ref, udh.parts, udh.order, ast_str_buffer(msg), &fullmsg);
                 if (csms_cnt <= 0) {
                     ast_log(LOG_ERROR, "[%s][SMS:%d PART:%d/%d TS:%s] Error putting message part to database\n", PVT_ID(pvt), (int)udh.ref, (int)udh.order,
-                            (int)udh.parts, scts);
+                            (int)udh.parts, ast_str_buffer(scts_str));
                     goto receive_as_is;
                 }
                 ast_str_update(fullmsg);
@@ -1730,7 +1667,7 @@ static int at_response_msg(struct pvt* const pvt, const struct ast_str* const re
                 if (!msg_complete) {
                     if ((int)udh.order == (int)udh.parts) {
                         ast_debug(1, "[%s][SMS:%d PART:%d/%d TS:%s] Incomplete message, got %d parts\n", PVT_ID(pvt), (int)udh.ref, (int)udh.order,
-                                  (int)udh.parts, scts, csms_cnt);
+                                  (int)udh.parts, ast_str_buffer(scts_str), csms_cnt);
                     }
                     goto msg_done;
                 }
@@ -1739,12 +1676,13 @@ receive_as_is:
                 msg_ack      = TRIBOOL_TRUE;
                 msg_ack_uid  = (int)udh.ref;
                 msg_complete = 1;
-                ast_verb(2, "[%s][SMS:%d TS:%s] Got message part from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, scts, ast_str_buffer(oa), tmp_esc_str(msg));
+                ast_verb(2, "[%s][SMS:%d TS:%s] Got message part from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, ast_str_buffer(scts_str), ast_str_buffer(oa),
+                         ast_str_buffer(msg));
                 ast_str_copy_string(&fullmsg, msg);
             }
 
             RAII_VAR(struct ast_json*, sms, ast_json_object_create(), ast_json_unref);
-            ast_json_object_set(sms, "ts", ast_json_string_create(scts));
+            ast_json_object_set(sms, "ts", ast_json_string_create(ast_str_buffer(scts_str)));
             if (udh.ref) {
                 ast_json_object_set(sms, "ref", ast_json_integer_create((int)udh.ref));
             }
@@ -1754,12 +1692,13 @@ receive_as_is:
             ast_json_object_set(sms, "from", ast_json_string_create(ast_str_buffer(oa)));
 
             if (ast_str_strlen(fullmsg)) {
-                ast_verb(1, "[%s][SMS:%d PARTS:%d TS:%s] Got message from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, (int)udh.parts, scts, ast_str_buffer(oa),
-                         tmp_esc_str(fullmsg));
+                ast_verb(1, "[%s][SMS:%d PARTS:%d TS:%s] Got message from %s: [%s]\n", PVT_ID(pvt), (int)udh.ref, (int)udh.parts, ast_str_buffer(scts_str),
+                         ast_str_buffer(oa), ast_str_buffer(fullmsg));
 
                 ast_json_object_set(sms, "msg", ast_json_string_create(ast_str_buffer(fullmsg)));
             } else {
-                ast_verb(1, "[%s][SMS:%d PARTS:%d TS:%s] Got empty message from %s\n", PVT_ID(pvt), (int)udh.ref, (int)udh.parts, scts, ast_str_buffer(oa));
+                ast_verb(1, "[%s][SMS:%d PARTS:%d TS:%s] Got empty message from %s\n", PVT_ID(pvt), (int)udh.ref, (int)udh.parts, ast_str_buffer(scts_str),
+                         ast_str_buffer(oa));
             }
 
             channel_start_local_json(pvt, "sms", ast_str_buffer(oa), "SMS", sms);
@@ -1769,7 +1708,7 @@ receive_as_is:
 
 msg_done:
 
-    if (CONF_SHARED(pvt, autodeletesms) && msg_complete) {
+    if (CONF_SHARED(pvt, sms_autodelete) && msg_complete) {
         switch (cmd) {
             case RES_CMGL:
                 at_enqueue_delete_sms(&pvt->sys_chan, idx, TRIBOOL_NONE);
@@ -2079,16 +2018,29 @@ static int at_response_cnum(struct pvt* const pvt, const struct ast_str* const r
 
 static int at_response_cops(struct pvt* const pvt, const struct ast_str* const response)
 {
-    const char* const network_name = at_parse_cops(ast_str_buffer(response));
+    char* network_name;
+    int act;
+
+    if (at_parse_cops(ast_str_buffer(response), &network_name, &act)) {
+        return -1;
+    }
 
     if (ast_strlen_zero(network_name)) {
         ast_string_field_set(pvt, network_name, "NONE");
         ast_verb(2, "[%s] Operator: %s\n", PVT_ID(pvt), pvt->network_name);
-        return -1;
+    } else {
+        ast_string_field_set(pvt, network_name, network_name);
+        ast_verb(1, "[%s] Operator: %s\n", PVT_ID(pvt), pvt->network_name);
     }
 
-    ast_string_field_set(pvt, network_name, network_name);
-    ast_verb(1, "[%s] Operator: %s\n", PVT_ID(pvt), pvt->network_name);
+    if (act >= 0) {
+        const int mact = map_creg_act(act);
+        if (mact >= 0) {
+            ast_verb(1, "[%s] Access technology: %s [%d]\n", PVT_ID(pvt), sys_act2str(mact), act);
+            pvt_set_act(pvt, mact);
+        }
+    }
+
     return 0;
 }
 
@@ -2159,45 +2111,54 @@ static int at_response_qnwinfo(struct pvt* const pvt, const struct ast_str* cons
  * \retval -1 error
  */
 
-static int at_response_creg(struct pvt* const pvt, const struct ast_str* const response)
+static int at_response_creg(struct pvt* const pvt, int cereg, const struct ast_str* const response)
 {
-    int gsm_reg;
+    int reg_status;
     char* lac;
     char* ci;
     int act;
 
-    if (at_parse_creg(ast_str_buffer(response), &gsm_reg, &pvt->gsm_reg_status, &lac, &ci, &act)) {
-        ast_log(LOG_ERROR, "[%s] Error parsing CREG: '%s'\n", PVT_ID(pvt), ast_str_buffer(response));
+    if (at_parse_creg(ast_str_buffer(response), cereg, &reg_status, &lac, &ci, &act)) {
+        ast_log(LOG_ERROR, "[%s] Error parsing %s: '%s'\n", PVT_ID(pvt), S_COR(cereg, "CEREG", "CREG"), ast_str_buffer(response));
         return 0;
     }
 
-    if (gsm_reg) {
-        if (pvt->is_simcom) {
-            if (at_enqueue_cspn_cops(&pvt->sys_chan)) {
-                ast_log(LOG_WARNING, "[%s] Error sending query for provider name\n", PVT_ID(pvt));
-            }
-        } else {
-            if (at_enqueue_qspn_qnwinfo(&pvt->sys_chan)) {
-                ast_log(LOG_WARNING, "[%s] Error sending query for provider name\n", PVT_ID(pvt));
-            }
+    if (gsm_is_registered(reg_status)) {
+        int (*const query_provider_name_fn)(struct cpvt*) = pvt->is_simcom ? &at_enqueue_cspn_cops : &at_enqueue_qspn_qnwinfo;
+        if ((*query_provider_name_fn)(&pvt->sys_chan)) {
+            ast_log(LOG_WARNING, "[%s] Error sending query for provider name\n", PVT_ID(pvt));
         }
 
         // #ifdef ISSUE_CCWA_STATUS_CHECK
         /* only if gsm_registered 0 -> 1 ? */
-        if (!pvt->gsm_registered && CONF_SHARED(pvt, callwaiting) != CALL_WAITING_AUTO) {
-            if (at_enqueue_set_ccwa(&pvt->sys_chan, CONF_SHARED(pvt, callwaiting))) {
+        if (!pvt->gsm_registered && CONF_SHARED(pvt, call_waiting) != CALL_WAITING_AUTO) {
+            if (at_enqueue_set_ccwa(&pvt->sys_chan, CONF_SHARED(pvt, call_waiting))) {
                 ast_log(LOG_WARNING, "[%s] Error setting call waiting mode\n", PVT_ID(pvt));
             }
         }
         // #endif
-        pvt->gsm_registered = 1;
-        ast_string_field_set(pvt, location_area_code, lac);
-        ast_string_field_set(pvt, cell_id, ci);
 
-        ast_verb(1, "[%s] Location area code: %s\n", PVT_ID(pvt), S_OR(lac, ""));
-        ast_verb(1, "[%s] Cell ID: %s\n", PVT_ID(pvt), S_OR(ci, ""));
+        pvt->gsm_registered = 1;
+        pvt->gsm_reg_status = reg_status;
+
+        if (lac) {
+            ast_string_field_set(pvt, location_area_code, lac);
+            ast_verb(1, "[%s] Location area code: %s\n", PVT_ID(pvt), S_OR(lac, ""));
+        }
+        if (ci) {
+            ast_string_field_set(pvt, cell_id, ci);
+            ast_verb(1, "[%s] Cell ID: %s\n", PVT_ID(pvt), S_OR(ci, ""));
+        }
+        if (act >= 0) {
+            const int mact = map_creg_act(act);
+            if (mact >= 0) {
+                ast_verb(1, "[%s] Access technology: %s [%d]\n", PVT_ID(pvt), sys_act2str(mact), act);
+                pvt_set_act(pvt, mact);
+            }
+        }
     } else {
         pvt->gsm_registered = 0;
+        pvt_set_act(pvt, 0);
         ast_string_field_set(pvt, location_area_code, NULL);
         ast_string_field_set(pvt, cell_id, NULL);
     }
@@ -2449,7 +2410,7 @@ static void at_response_dtmf(struct pvt* const pvt, const struct ast_str* const 
     send_dtmf_frame(pvt, c);
 }
 
-static const char* attribute_const qpcmv2str(int qpcmv)
+static const char* qpcmv2str(int qpcmv)
 {
     const char* const names[3] = {"USB NMEA port", "Debug UART", "USB sound card"};
     return enum2str_def((unsigned)qpcmv, names, ARRAY_LEN(names), "Unknown");
@@ -2468,30 +2429,32 @@ static void at_response_qpcmv(struct pvt* const pvt, const struct ast_str* const
     ast_debug(1, "[%s] Voice configuration: %s [%s]\n", PVT_ID(pvt), qpcmv2str(mode), S_COR(enabled, "enabled", "disabled"));
 }
 
+static void show_module_time(struct pvt* const pvt)
+{
+    struct ast_str* ts_str = ast_str_alloca(AST_TM_MAX_LEN);
+    format_ast_tm(&pvt->module_time, ts_str);
+    ast_verb(3, "[%s] Module time: %s\n", PVT_ID(pvt), ast_str_buffer(ts_str));
+}
+
 static void at_response_qlts(struct pvt* const pvt, const struct ast_str* const response)
 {
-    char* ts;
-
-    if (at_parse_qlts(ast_str_buffer(response), &ts)) {
+    if (at_parse_qlts(ast_str_buffer(response), &pvt->module_time)) {
         ast_log(LOG_ERROR, "[%s] Error parsing '%s'\n", PVT_ID(pvt), ast_str_buffer(response));
         return;
     }
 
-    ast_string_field_set(pvt, module_time, ts);
-    ast_verb(3, "[%s] Module time: %s\n", PVT_ID(pvt), pvt->module_time);
+    show_module_time(pvt);
 }
 
 static void at_response_cclk(struct pvt* const pvt, const struct ast_str* const response)
 {
-    char* ts;
-
-    if (at_parse_cclk(ast_str_buffer(response), &ts)) {
+    if (at_parse_cclk(ast_str_buffer(response), &pvt->module_time)) {
         ast_log(LOG_ERROR, "[%s] Error parsing '%s'\n", PVT_ID(pvt), ast_str_buffer(response));
         return;
     }
 
-    ast_string_field_set(pvt, module_time, ts);
-    ast_verb(3, "[%s] Module time: %s\n", PVT_ID(pvt), pvt->module_time);
+    ast_tm_normalize(&pvt->module_time);
+    show_module_time(pvt);
 }
 
 static void at_response_qrxgain(struct pvt* const pvt, const struct ast_str* const response)
@@ -2712,20 +2675,20 @@ static int at_response_ciev(struct pvt* const pvt, const struct ast_str* const r
 
 static int at_response_psuttz(struct pvt* const pvt, const struct ast_str* const response)
 {
-    static const ssize_t MODULE_TIME_DEF_SIZE = 50;
+    int time_zone;
+    struct ast_tm ts;
 
-    int year, month, day, hour, min, sec, dst, time_zone;
+    memset(&ts, 0, sizeof(ts));
 
-    if (at_parse_psuttz(ast_str_buffer(response), &year, &month, &day, &hour, &min, &sec, &time_zone, &dst)) {
+    if (at_parse_psuttz(ast_str_buffer(response), &ts.tm_year, &ts.tm_mon, &ts.tm_mday, &ts.tm_hour, &ts.tm_min, &ts.tm_sec, &time_zone, &ts.tm_isdst)) {
         ast_log(LOG_ERROR, "[%s] Error parsing '%s'\n", PVT_ID(pvt), ast_str_buffer(response));
         return -1;
     }
 
-    RAII_VAR(struct ast_str*, module_time, ast_str_create(MODULE_TIME_DEF_SIZE), ast_free);
-    ast_str_set(&module_time, 0, "%02d/%02d/%02d,%02d:%02d:%02d%+d", year % 100, month, day, hour, min, sec, time_zone);
-    ast_string_field_set(pvt, module_time, ast_str_buffer(module_time));
+    ts.tm_gmtoff     = 15 * 60 * time_zone;
+    pvt->module_time = *ast_tm_normalize(&ts);
 
-    ast_verb(3, "[%s] Module time: %s\n", PVT_ID(pvt), pvt->module_time);
+    show_module_time(pvt);
     return 0;
 }
 
@@ -2802,8 +2765,10 @@ int at_response(struct pvt* const pvt, const struct ast_str* const response, con
         case RES_SRVST:
         case RES_CVOICE:
         case RES_CPMS:
-        case RES_CONF:
+        case RES_MISSED_CALL:
         case RES_DST:
+        case RES_VOICE_CALL:
+        case RES_RCEND:
             return 0;
 
         case RES_OK:
@@ -2823,26 +2788,14 @@ int at_response(struct pvt* const pvt, const struct ast_str* const response, con
         case RES_DSCI:
             return at_response_dsci(pvt, response);
 
-        case RES_CEND:
-#ifdef HANDLE_CEND
-            return at_response_cend(pvt, str);
-#else
-            return 0;
-#endif
-
-        case RES_RCEND:
-#ifdef HANDLE_RCEND
-            return at_response_rcend(pvt);
-#else
-            return 0;
-#endif
-
         case RES_CREG:
             /* An error here is not fatal. Just keep going. */
-            at_response_creg(pvt, response);
+            at_response_creg(pvt, 0, response);
             return 0;
 
         case RES_CEREG:
+            /* An error here is not fatal. Just keep going. */
+            at_response_creg(pvt, 1, response);
             return 0;
 
         case RES_COPS:
@@ -3053,6 +3006,9 @@ int at_response(struct pvt* const pvt, const struct ast_str* const response, con
                     case CMD_AT_CCID:
                         ast_debug(2, "[%s] Got ICCID number\n", PVT_ID(pvt));
                         return at_response_ccid(pvt, response);
+
+                    case CMD_USER:
+                        return 0;
 
                     default:
                         break;

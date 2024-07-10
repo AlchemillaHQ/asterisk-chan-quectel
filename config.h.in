@@ -29,7 +29,10 @@
 #cmakedefine ASTERISK_VERSION_NUM @ASTERISK_VERSION_NUM@
 
 /* Build applications flag */
-#cmakedefine BUILD_APPLICATIONS
+#cmakedefine WITH_APPLICATIONS
+
+/* Register message technology */
+#cmakedefine WITH_MSG_TECH
 
 /* clang-format on */
 

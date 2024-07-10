@@ -4,6 +4,7 @@
 #ifndef CHAN_QUECTEL_HELPERS_H_INCLUDED
 #define CHAN_QUECTEL_HELPERS_H_INCLUDED
 
+#include <asterisk/localtime.h>
 #include <asterisk/strings.h>
 
 #include "chan_quectel.h" /* restate_time_t */
@@ -11,7 +12,7 @@
 
 /* return status string of sending, status arg is optional */
 int send_ussd(const char* dev_name, const char* ussd);
-int send_sms(const char* const dev_name, const char* const number, const char* const message, int validity, int report);
+int send_sms(const char* const resource, const char* const sca, const char* const destination, const char* const message, int validity, int report);
 int list_sms(const char* const dev_name, enum msg_status_t stat);
 int delete_sms(const char* const dev_name, unsigned int idx, int delflag);
 int sms_direct(const char* const dev_name, int directflag);
@@ -37,7 +38,7 @@ struct ast_str* const gain2str(int);
 int str2gain_simcom(const char*, int*);
 struct ast_str* const gain2str_simcom(int);
 
-size_t attribute_const get_esc_str_buffer_size(size_t);
+size_t get_esc_str_buffer_size(size_t);
 struct ast_str* escape_nstr(const char*, size_t);
 struct ast_str* escape_str(const struct ast_str* const);
 
@@ -62,10 +63,22 @@ const char* escape_str_ex(struct ast_str*, const struct ast_str* const);
     if (s && ast_str_strlen(s)) ast_json_object_set(j, #s, ast_json_string_create(ast_str_buffer(s)));
 
 
-const char* attribute_const gsm_regstate2str(int gsm_reg_status);
-const char* attribute_const gsm_regstate2str_json(int gsm_reg_status);
-const char* attribute_const sys_act2str(int sys_submode);
+int gsm_is_registered(int stat);
+const char* gsm_regstate2str(int gsm_reg_status);
+const char* gsm_regstate2str_json(int gsm_reg_status);
+int map_creg_act(int act);
+const char* sys_act2str(int sys_submode);
 struct ast_str* rssi2dBm(int rssi);
+
+const char* dev_state2str(dev_state_t state);
+const char* dev_state2str_capitalized(dev_state_t state);
+dev_state_t str2dev_state(const char* str);
+const char* dev_state2str_msg(dev_state_t state);
+
+const char* restate2str_msg(restate_time_t when);
+
+int format_ast_tm(const struct ast_tm* const tm, struct ast_str* str);
+struct ast_tm* ast_tm_normalize(struct ast_tm* const tm);
 
 size_t fd_write_all(int fd, const char* buf, size_t count);
 

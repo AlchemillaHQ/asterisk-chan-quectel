@@ -57,7 +57,7 @@
     _(AT_CREG, "AT+CREG?")                          \
     _(AT_CREG_INIT, "AT+CREG=")                     \
     _(AT_CEREG, "AT+CEREG?")                        \
-    _(AT_CEREG_INIT, "AT+CREG=")                    \
+    _(AT_CEREG_INIT, "AT+CEREG=")                   \
     _(AT_CSCS, "AT+CSCS")                           \
     _(AT_CSQ, "AT+CSQ")                             \
     _(AT_AUTOCSQ_INIT, "AT+AUTOCSQ=")               \
@@ -131,7 +131,7 @@ enum msg_status_t { MSG_STAT_REC_UNREAD, MSG_STAT_REC_READ, MSG_STAT_STO_UNSENT,
 struct pvt;
 struct cpvt;
 
-const char* attribute_const at_cmd2str(at_cmd_t cmd);
+const char* at_cmd2str(at_cmd_t cmd);
 int at_enqueue_at(struct cpvt* cpvt);
 int at_enqueue_initialization(struct cpvt* cpvt);
 int at_enqueue_initialization_quectel(struct cpvt*, unsigned int);
@@ -141,7 +141,7 @@ int at_enqueue_ping(struct cpvt* cpvt);
 int at_enqueue_ping_taskproc(void*);
 int at_enqueue_cspn_cops(struct cpvt* cpvt);
 int at_enqueue_qspn_qnwinfo(struct cpvt* cpvt);
-int at_enqueue_sms(struct cpvt* cpvt, const char* number, const char* msg, unsigned validity_min, int report_req);
+int at_enqueue_sms(struct cpvt* cpvt, const char* sca, const char* destination, const char* msg, unsigned validity_min, int report_req);
 int at_enqueue_ussd(struct cpvt* cpvt, const char* code, int gsm7);
 int at_enqueue_dtmf(struct cpvt* cpvt, char digit);
 int at_enqueue_set_ccwa(struct cpvt* cpvt, unsigned call_waiting);
@@ -150,7 +150,7 @@ int at_enqueue_dial(struct cpvt* cpvt, const char* number, int clir);
 int at_enqueue_answer(struct cpvt* cpvt);
 int at_enqueue_user_cmd(struct cpvt* cpvt, const char* input);
 int at_enqueue_list_messages(struct cpvt* cpvt, enum msg_status_t stat);
-int at_enqueue_retrieve_sms(struct cpvt* cpvt, int idx);
+int at_enqueue_retrieve_sms(struct cpvt* cpvt, int idx, int sms_type);
 void at_sms_retrieved(struct cpvt* cpvt, int confirm);
 int at_enqueue_cmgd(struct cpvt* cpvt, unsigned int index, int delflag);
 int at_enqueue_delete_sms(struct cpvt* cpvt, int idx, tristate_bool_t ack);

@@ -33,21 +33,19 @@ static const char lut_hex2val[] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 static const char* lut_val2hex = "0123456789ABCDEF";
 
-static ssize_t convert_string(const char* in, size_t in_length, char* out, size_t out_size, char* from, char* to)
+static ssize_t convert_string(const char* in, size_t in_length, char* out, size_t out_size, const char* from, const char* to)
 {
     ICONV_CONST char* in_ptr = (ICONV_CONST char*)in;
     size_t in_bytesleft      = in_length;
     char* out_ptr            = out;
     size_t out_bytesleft     = out_size - 1;
-    ICONV_T cd               = (ICONV_T)-1;
-    ssize_t res;
 
-    cd = iconv_open(to, from);
+    const ICONV_T cd = iconv_open(to, from);
     if (cd == (ICONV_T)-1) {
         return -1;
     }
 
-    res = iconv(cd, &in_ptr, &in_bytesleft, &out_ptr, &out_bytesleft);
+    const ssize_t res = iconv(cd, &in_ptr, &in_bytesleft, &out_ptr, &out_bytesleft);
     if (res < 0) {
         iconv_close(cd);
         return -1;
@@ -60,7 +58,7 @@ static ssize_t convert_string(const char* in, size_t in_length, char* out, size_
 
 ssize_t utf8_to_ucs2(const char* in, size_t in_length, uint16_t* out, size_t out_size)
 {
-    ssize_t res = convert_string(in, in_length, (char*)out, out_size * 2, "UTF-8", "UTF-16BE");
+    const ssize_t res = convert_string(in, in_length, (char*)out, out_size * 2, "UTF-8", "UTF-16BE");
     if (res < 0) {
         return res;
     }
@@ -106,24 +104,26 @@ void hexify(const uint8_t* in, size_t in_length, char* out)
 
 #/* */
 
+// c is BIG ENDIAN
 static const uint8_t* get_char_gsm7_encoding(uint16_t c)
 {
-    int minor = c >> 8, major = c & 255;
-    int subtab = LUT_GSM7_REV1[major];
+    const int minor = (c & 0xFF00) >> 8, major = c & 0x00FF;
+    const int subtab = LUT_GSM7_REV1[major];
     if (subtab == -1) {
         return LUT_GSM7_REV2_INV;
     }
     return LUT_GSM7_REV2[subtab][minor];
 }
 
+// in is BIG ENDIAN
 ssize_t gsm7_encode(const uint16_t* in, size_t in_length, uint16_t* out)
 {
     // TODO: Should we check for other tables or just use UCS-2?
     unsigned bytes        = 0;
     const uint8_t* escenc = get_char_gsm7_encoding(0x1B00);
-    for (unsigned i = 0; i < in_length; ++i) {
+    for (size_t i = 0; i < in_length; ++i) {
         const uint8_t* enc = get_char_gsm7_encoding(in[i]);
-        uint8_t c          = enc[0];
+        const uint8_t c    = enc[0];
         if (c == GSM7_INVALID) {
             return -1;
         }
@@ -152,7 +152,7 @@ ssize_t gsm7_pack(const uint16_t* in, size_t in_length, char* out, size_t out_si
     }
 
     for (x = i = 0; i != in_length; ++i) {
-        char c[] = {in[i] >> 8, in[i] & 255};
+        const char c[] = {(in[i] & 0xFF00) >> 8, in[i] & 0x00FF};
 
         for (int j = c[0] == 0; j < 2; ++j) {
             value       |= (c[j] & 0x7F) << out_padding;
@@ -211,21 +211,20 @@ ssize_t gsm7_unpack_decode(const char* in, size_t in_nibbles, uint16_t* out, siz
         if (i & 1) {
             c >>= 4;
         }
-        const uint8_t n  = c & 0xf;
+        const uint8_t n  = c & 0x0f;
         value           |= n << in_padding;
         in_padding      += 4;
 
         while (in_padding >= 7 * 2) {
             in_padding  -= 7;
             value      >>= 7;
-            {
-                const uint16_t val = (esc ? LUT_GSM7_SS16 : LUT_GSM7_LS16)[esc ? ss : ls][value & 0x7f];
-                if (val == 0x1b) {
-                    esc = 1;
-                } else {
-                    esc      = 0;
-                    out[x++] = ((val & 0xff) << 8) | (val >> 8);
-                }
+
+            const uint16_t val = (esc ? LUT_GSM7_SS16 : LUT_GSM7_LS16)[esc ? ss : ls][value & 0x7f];
+            if (val == 0x1b) {
+                esc = 1;
+            } else {
+                esc      = 0;
+                out[x++] = big_endian_16(val);
             }
         }
     }

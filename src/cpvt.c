@@ -16,7 +16,7 @@
 #include "channel.h"
 #include "mutils.h" /* ARRAY_LEN() */
 
-const char* attribute_const call_state2str(call_state_t state)
+const char* call_state2str(call_state_t state)
 {
     static const char* const states[] = {/* real device states */
                                          "active", "held", "dialing", "alerting", "incoming", "waiting",
@@ -77,7 +77,7 @@ struct cpvt* cpvt_alloc(struct pvt* pvt, int call_idx, unsigned dir, call_state_
     cpvt->state      = state;
     cpvt->rd_pipe[0] = fd[0];
     cpvt->rd_pipe[1] = fd[1];
-    cpvt->read_buf   = ast_calloc(1, buffer_size + AST_FRIENDLY_OFFSET);
+    cpvt->buffer     = ast_calloc(1, buffer_size + AST_FRIENDLY_OFFSET);
 
     CPVT_SET_DIRECTION(cpvt, dir);
     CPVT_SET_LOCAL(cpvt, local_channel);
@@ -134,8 +134,7 @@ void cpvt_free(struct cpvt* cpvt)
     decrease_chan_counters(cpvt, pvt);
     relink_to_sys_chan(cpvt, pvt);
 
-    ast_free(cpvt->read_buf);
-    cpvt->read_buf = NULL;
+    ast_free(cpvt->buffer);
 
     close(cpvt->rd_pipe[1]);
     close(cpvt->rd_pipe[0]);
@@ -406,4 +405,29 @@ void cpvt_unlock(struct cpvt* const cpvt)
         return;
     }
     pvt_unlock(cpvt->pvt);
+}
+
+void* cpvt_get_buffer(struct cpvt* const cpvt) { return cpvt->buffer + AST_FRIENDLY_OFFSET; }
+
+struct ast_frame* cpvt_prepare_voice_frame(struct cpvt* const cpvt, void* const buf, int samples, const struct ast_format* const fmt)
+{
+    struct ast_frame* const f = &cpvt->frame;
+
+    memset(f, 0, sizeof(struct ast_frame));
+
+    f->frametype       = AST_FRAME_VOICE;
+    f->subclass.format = (struct ast_format*)fmt;
+    f->samples         = samples;
+    f->datalen         = samples * sizeof(int16_t);
+    f->data.ptr        = buf;
+    f->offset          = AST_FRIENDLY_OFFSET;
+    f->src             = AST_MODULE;
+
+    ast_frame_byteswap_le(f);
+    return f;
+}
+
+struct ast_frame* cpvt_prepare_silence_voice_frame(struct cpvt* const cpvt, int samples, const struct ast_format* const fmt)
+{
+    return cpvt_prepare_voice_frame(cpvt, pvt_get_silence_buffer(cpvt->pvt), samples, fmt);
 }

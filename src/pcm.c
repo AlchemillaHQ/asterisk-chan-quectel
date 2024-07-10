@@ -50,7 +50,7 @@ void _pcm_show_state(int attribute_unused lvl, const char* file, int line, const
             snd_pcm_state_name(pcm_state), delay_period_buffers, delay, avail_period_buffers, avail);
 }
 
-static attribute_const snd_pcm_uframes_t adjust_uframes(snd_pcm_uframes_t ptime, unsigned int rate)
+static snd_pcm_uframes_t adjust_uframes(snd_pcm_uframes_t ptime, unsigned int rate)
 {
     snd_pcm_uframes_t res  = ptime;
     res                   *= rate / 1000;
@@ -58,7 +58,7 @@ static attribute_const snd_pcm_uframes_t adjust_uframes(snd_pcm_uframes_t ptime,
     return res;
 }
 
-static attribute_const snd_pcm_uframes_t adjust_start_threshold(snd_pcm_uframes_t ptime)
+static snd_pcm_uframes_t adjust_start_threshold(snd_pcm_uframes_t ptime)
 {
     static const size_t PTIME_MIN_START_THRESHOLD = 100u;
     static const size_t PTIME_MAX_START_THRESHOLD = 250u;

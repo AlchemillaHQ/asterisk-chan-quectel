@@ -5,7 +5,7 @@
 
 #include "mutils.h"
 
-const char* attribute_const error2str(int err)
+const char* error2str(int err)
 {
     static const char* const errors[] = {
         "Unknown error",

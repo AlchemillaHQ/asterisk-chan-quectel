@@ -1,18 +1,12 @@
 #!/usr/bin/cmake -P
 
-# first argument - preset
-# second argument - Asterisk version
+# first argument - preset name
+# second argument - Asterisk version number
 
 IF(NOT DEFINED CMAKE_ARGV3)
     SET(PRESET_NAME "default")
-ELSEIF(${CMAKE_ARGV3} STREQUAL "default")
-    SET(PRESET_NAME "default")
-ELSEIF(${CMAKE_ARGV3} STREQUAL "arm")
-    SET(PRESET_NAME "arm")
-ELSEIF(${CMAKE_ARGV3} STREQUAL "arm64")
-    SET(PRESET_NAME "arm64")
 ELSE()
-    MESSAGE(FATAL_ERROR "Unknown architecture: ${CMAKE_ARGV3}")
+    SET(PRESET_NAME ${CMAKE_ARGV3})
 ENDIF()
 
 IF(NOT DEFINED CMAKE_ARGV4)

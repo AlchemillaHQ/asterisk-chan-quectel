@@ -1,20 +1,12 @@
 #!/usr/bin/cmake -P
 
-IF(NOT DEFINED CMAKE_ARGV3)
-    SET(PRESET_NAME "build")
-ELSEIF(${CMAKE_ARGV3} STREQUAL "arm")
-    SET(PRESET_NAME "build-arm")
-ELSEIF(${CMAKE_ARGV3} STREQUAL "arm64")
-    SET(PRESET_NAME "build-arm64")
-ELSE()
-    MESSAGE(FATAL_ERROR "Unknown architecture: ${CMAKE_ARGV3}")
-ENDIF()
-
 CMAKE_PATH(GET CMAKE_SCRIPT_MODE_FILE PARENT_PATH SCRIPT_DIR)
 
 SET(ENV{DESTDIR} ${SCRIPT_DIR}/install)
+SET(ENV{CMAKE_INSTALL_MODE} COPY)
+
 EXECUTE_PROCESS(
-    COMMAND ${CMAKE_COMMAND} --install ${PRESET_NAME} --component openwrt --prefix=/
+    COMMAND ${CMAKE_COMMAND} --install build --component openwrt --prefix=/
     WORKING_DIRECTORY ${SCRIPT_DIR}
     COMMAND_ERROR_IS_FATAL ANY
 )

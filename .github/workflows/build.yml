@@ -14,21 +14,42 @@ jobs:
     name: Formatting Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: jidicula/clang-format-action@v4.11.0
       with:
-        clang-format-version: 17
+        clang-format-version: 18
         check-path: src
 
-  build:
+  check-openwrt:
+    name: Collect sources of OpenWRT package
     runs-on: ubuntu-latest
     needs: formatting-check
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     - uses: ./.github/actions/install-required-packages
+    - name: Get source date epoch
+      run: ./get-source-date-epoch.sh > .env
     - name: Configure project
-      run: cmake -P make-build-dir.cmake
+      run: ./dotenv.sh .env cmake -P configure-openwrt-makefile.cmake
+    - name: Collect sources of OpenWRT package
+      run: ./dotenv.sh .env cmake -P build-chan-quectel.cmake openwrt
+
+  build:
+    name: Build module
+    runs-on: ubuntu-latest
+    needs: formatting-check
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: ./.github/actions/install-required-packages
+    - name: Get source date epoch
+      run: ./get-source-date-epoch.sh > .env
+    - name: Collect build flags
+      run: ./get-build-flags.sh deb > CMakeUserPresets.json
+    - name: Configure project
+      run: ./dotenv.sh .env cmake -P make-build-dir.cmake deb
     - name: Build
-      run: cmake -P build-chan-quectel.cmake
+      run: ./dotenv.sh .env cmake -P build-chan-quectel.cmake deb

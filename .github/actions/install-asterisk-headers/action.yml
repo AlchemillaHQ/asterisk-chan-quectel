@@ -9,7 +9,7 @@ runs:
   steps:
     - name: Restore Asterisk from cache
       id: cache-asterisk-restore
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: asterisk
         key: asterisk-${{ inputs.asterisk-version }}

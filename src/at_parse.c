@@ -59,7 +59,7 @@ static char* trim_blanks(char* str)
     return str;
 }
 
-const char* attribute_const at_qind2str(qind_t qind)
+const char* at_qind2str(qind_t qind)
 {
     static const char* qind_names[] = {"NONE", "CSQ", "ACT", "CCINFO"};
     return enum2str_def(qind, qind_names, ARRAY_LEN(qind_names), "UNK");
@@ -95,49 +95,54 @@ char* at_parse_cnum(char* str)
     return strip_quoted(marks[1] + 1);
 }
 
-/*!
- * \brief Parse a COPS response
- * \param str -- string to parse (null terminated)
- * \param len -- string lenght
- * @note str will be modified when the COPS message is parsed
- * \return NULL on error (parse error) or a pointer to the provider name
- */
-char* at_parse_cops(char* str)
+int at_parse_cops(char* str, char** oper, int* act)
 {
+    *oper               = NULL;
+    *act                = -1;
+    const char* act_str = NULL;
+
     /*
      * parse COPS response in the following format:
-     * +COPS: <mode>[,<format>,<oper>,<?>]
+     * +COPS: <mode>[,<format>,<oper>,<Act>]
      *
      * example
      *  +COPS: 0,0,"TELE2",0
      *  +COPS: 0,0,"POL"
      */
 
-    static const char delimiters[]     = ":,,,";
-    static const size_t delimiters_no  = STRLEN(delimiters);
-    static const size_t delimiters_no1 = delimiters_no - 1u;
+    static const char delimiters[]    = ":,,,";
+    static const size_t delimiters_no = STRLEN(delimiters);
 
     char* marks[delimiters_no];
 
     /* parse URC only here */
     const unsigned int marks_no = mark_line(str, delimiters, marks);
-    if (marks_no >= delimiters_no1) {
-        if (marks_no > 3) {
+    switch (marks_no) {
+        case 3:
+            *oper = trim_blanks(strip_quoted(marks[2] + 1));
+            break;
+
+        case 4:
             marks[3][0] = '\000';
-        }
-        char* res = strip_quoted(marks[2] + 1);
-        /* Sometimes there is trailing garbage here;
-         * e.g. "Tele2@" or "Tele2<U+FFFD>" instead of "Tele2".
-         * Unsure why it happens (provider? quectel?), but it causes
-         * trouble later on too (at pbx_builtin_setvar_helper which
-         * is not encoding agnostic anymore, now that it uses json
-         * for messaging). See wdoekes/asterisk-chan-quectel
-         * GitHub issues #39 and #69. */
-        res = trim_blanks(res);
-        return res;
+            act_str     = strip_quoted(marks[3] + 1);
+            *oper       = trim_blanks(strip_quoted(marks[2] + 1));
+            break;
+
+        default:
+            return 1;
     }
 
-    return NULL;
+    if (act_str) {
+        errno          = 0;
+        const int lact = (int)strtol(act_str, (char**)NULL, 10);
+        if (errno == EINVAL) {
+            *act = -1;
+        } else {
+            *act = lact;
+        }
+    }
+
+    return 0;
 }
 
 int at_parse_qspn(char* str, char** fnn, char** snn, char** spn)
@@ -199,7 +204,7 @@ int at_parse_cspn(char* str, char** spn)
     return -1;
 }
 
-static int attribute_const act2int(const char* act)
+static int act2int(const char* act)
 {
     static const struct {
         const char* act;
@@ -308,11 +313,10 @@ int at_parse_qnwinfo(char* str, int* act, int* oper, char** band, int* channel)
  * \retval  0 success
  * \retval -1 parse error
  */
-int at_parse_creg(char* str, int* gsm_reg, int* gsm_reg_status, char** lac, char** ci, int* act)
+int at_parse_creg(char* str, int cereg, int* gsm_reg_status, char** lac, char** ci, int* act)
 {
     char* gsm_reg_str = NULL;
 
-    *gsm_reg            = 0;
     *gsm_reg_status     = -1;
     *lac                = NULL;
     *ci                 = NULL;
@@ -348,12 +352,12 @@ int at_parse_creg(char* str, int* gsm_reg, int* gsm_reg_status, char** lac, char
             marks[1][0] = '\000';
             marks[2][0] = '\000';
             marks[3][0] = '\000';
-            if (marks[1][1] == '"') {
+            if (cereg || marks[1][1] == '"') {
+                act_str     = marks[3] + 1;
                 *ci         = strip_quoted(marks[2] + 1);
                 *lac        = strip_quoted(marks[1] + 1);
                 gsm_reg_str = strip_quoted(marks[0] + 1);
             } else {
-                act_str     = marks[3] + 1;
                 *ci         = strip_quoted(marks[3] + 1);
                 *lac        = strip_quoted(marks[2] + 1);
                 gsm_reg_str = strip_quoted(marks[1] + 1);
@@ -387,11 +391,6 @@ int at_parse_creg(char* str, int* gsm_reg, int* gsm_reg_status, char** lac, char
         }
 
         *gsm_reg_status = status;
-        if (status == 1 || status == 5) {
-            *gsm_reg = 1;
-        } else {
-            *gsm_reg = status;
-        }
     }
 
     if (act_str) {
@@ -448,8 +447,8 @@ int at_parse_cdsi(const char* str, int* idx)
     return 0;
 }
 
-static int parse_pdu(const char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt,
-                     char* msg, size_t* msg_len, pdu_udh_t* udh)
+static int parse_pdu(const char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                     struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     uint16_t msg16_tmp[256];
 
@@ -518,8 +517,8 @@ static int parse_pdu(const char* str, size_t len, int* tpdu_type, char* sca, siz
  * \retval -1 parse error
  */
 
-int at_parse_cmgr(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                  size_t* msg_len, pdu_udh_t* udh)
+int at_parse_cmgr(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                  struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     /* skip "+CMGR:" */
     while (len > 0 && *str != ':') {
@@ -578,8 +577,8 @@ int at_parse_cmgr(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_l
     return parse_pdu(marks[2] + 1, tpdu_length, tpdu_type, sca, sca_len, oa, oa_len, scts, mr, st, dt, msg, msg_len, udh);
 }
 
-int at_parse_cmt(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh)
+int at_parse_cmt(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     /* skip "+CMT:" */
     str += 5;
@@ -620,8 +619,8 @@ int at_parse_cmt(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_le
     return parse_pdu(marks[1] + 1, tpdu_length, tpdu_type, sca, sca_len, oa, oa_len, scts, mr, st, dt, msg, msg_len, udh);
 }
 
-int at_parse_cbm(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh)
+int at_parse_cbm(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     /* skip "+CBM:" */
     str += 5;
@@ -666,8 +665,8 @@ int at_parse_cbm(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_le
     return parse_pdu(marks[0] + 1, tpdu_length, tpdu_type, sca, sca_len, oa, oa_len, scts, mr, st, dt, msg, msg_len, udh);
 }
 
-int at_parse_cds(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh)
+int at_parse_cds(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     /* skip "+CDS:" */
     str += 5;
@@ -712,8 +711,8 @@ int at_parse_cds(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_le
     return parse_pdu(marks[0] + 1, tpdu_length, tpdu_type, sca, sca_len, oa, oa_len, scts, mr, st, dt, msg, msg_len, udh);
 }
 
-int at_parse_cmgl(char* str, size_t len, int* idx, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt,
-                  char* msg, size_t* msg_len, pdu_udh_t* udh)
+int at_parse_cmgl(char* str, size_t len, int* idx, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                  struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh)
 {
     /* skip "+CMGL:" */
     str += 6;
@@ -1199,24 +1198,78 @@ int at_parse_qpcmv(char* str, int* enabled, int* mode)
     return 0;
 }
 
-int at_parse_qlts(char* str, char** ts)
+static int find_dst(char* const ts, int* dst)
+{
+    char* s = strrchr(ts, ',');
+    if (!s) {
+        return -1;
+    }
+    *s++         = '\000';
+    errno        = 0;
+    const long d = strtol(s, (char**)NULL, 10);
+    if (errno == EINVAL) {
+        return -1;
+    }
+    *dst = (int)d;
+    return 0;
+}
+
+static int find_offset(char* const ts, int* offset)
+{
+    int sgn = 1;
+    char* s = strrchr(ts, '+');
+    if (!s) {
+        sgn = -1;
+        s   = strrchr(ts, '-');
+    }
+    if (!s) {
+        return -1;
+    }
+    *s++ = '\000';
+
+    errno        = 0;
+    const long o = strtol(s, (char**)NULL, 10);
+    if (errno == EINVAL) {
+        return -1;
+    }
+    *offset = (int)(o * sgn);
+    return 0;
+}
+
+int at_parse_qlts(char* str, struct ast_tm* const ts)
 {
     /*
         +QLTS: "2017/10/13,03:40:48+32,0"
+        +QLTS: "2024/06/11,08:37:38+08,1"
     */
 
     static const char delimiters[] = ":";
     char* marks[STRLEN(delimiters)];
 
-    if (mark_line(str, delimiters, marks) == 1) {
-        *ts = strip_quoted(marks[0] + 1);
-        return 0;
+    if (mark_line(str, delimiters, marks) != 1) {
+        return -1;
     }
 
-    return -1;
+    char* const tstr = strip_quoted(marks[0] + 1);
+    if (ast_strlen_zero(tstr)) {
+        return -1;
+    }
+
+    int dst, offset;
+    if (find_dst(tstr, &dst) || find_offset(tstr, &offset)) {
+        return -1;
+    }
+
+    struct ast_tm t;
+    ast_strptime(tstr, "%Y/%m/%e,%H:%M:%S", &t);
+    t.tm_isdst  = dst;
+    t.tm_gmtoff = 15 * 60 * offset;
+
+    *ts = t;
+    return 0;
 }
 
-int at_parse_cclk(char* str, char** ts)
+int at_parse_cclk(char* str, struct ast_tm* ts)
 {
     /*
         +CCLK: “08/11/26,10:15:02+32”
@@ -1225,12 +1278,27 @@ int at_parse_cclk(char* str, char** ts)
     static const char delimiters[] = ":";
     char* marks[STRLEN(delimiters)];
 
-    if (mark_line(str, delimiters, marks) == 1) {
-        *ts = strip_quoted(marks[0] + 1);
-        return 0;
+    if (mark_line(str, delimiters, marks) != 1) {
+        return -1;
     }
 
-    return -1;
+    char* const tstr = strip_quoted(marks[0] + 1);
+    if (ast_strlen_zero(tstr)) {
+        return -1;
+    }
+
+    int offset;
+    if (find_offset(tstr, &offset)) {
+        return -1;
+    }
+
+    struct ast_tm t;
+    ast_strptime(tstr, "%y/%m/%e,%H:%M:%S", &t);
+    t.tm_isdst  = 0;
+    t.tm_gmtoff = 15 * 60 * offset;
+
+    *ts = t;
+    return 0;
 }
 
 int at_parse_qrxgain(const char* str, int* gain)
@@ -1543,12 +1611,12 @@ int at_parse_psuttz(char* str, int* year, int* month, int* day, int* hour, int* 
         return -1;
     }
 
-    *tz = (int)strtoul(tz_str, NULL, 10);
+    *tz = (int)strtol(tz_str, NULL, 10);
     if (errno == ERANGE) {
         return -1;
     }
 
-    *dst = (int)strtoul(dst_str, NULL, 10);
+    *dst = (int)strtol(dst_str, NULL, 10);
     if (errno == ERANGE) {
         return -1;
     }

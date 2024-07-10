@@ -20,12 +20,13 @@ SET(SOURCES
     dc_config.c
     pdu.c
     mixbuffer.c
-    pdiscovery.c
     error.c
     smsdb.c
     monitor_thread.c
     tty.c
     pcm.c
+    msg_tech.c
+    eventfd.c
 )
 
 SET(HEADERS
@@ -46,7 +47,6 @@ SET(HEADERS
     dc_config.h
     pdu.h
     mixbuffer.h
-    pdiscovery.h
     error.h
     smsdb.h
     mutils.h
@@ -55,4 +55,6 @@ SET(HEADERS
     monitor_thread.h
     tty.h
     pcm.h
+    msg_tech.h
+    eventfd.h
 )

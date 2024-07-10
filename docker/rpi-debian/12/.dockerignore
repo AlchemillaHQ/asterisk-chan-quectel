@@ -1,0 +1,6 @@
+# .dockerignore
+.task
+package
+Taskfile.dist.yaml
+Taskfile.yaml
+

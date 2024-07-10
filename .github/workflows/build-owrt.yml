@@ -11,10 +11,10 @@ jobs:
     name: Formatting Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: jidicula/clang-format-action@v4.11.0
       with:
-        clang-format-version: 17
+        clang-format-version: 18
         check-path: src
 
   build:
@@ -33,12 +33,12 @@ jobs:
         - owrt: 22.03.6
           gcc: 11.2.0
           ast: 181501
-        - owrt: 23.05.2
+        - owrt: 23.05.3
           gcc: 12.3.0
           ast: 200300
     steps:
     - name: Checkout actions
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         sparse-checkout: |
           .github/actions
@@ -54,12 +54,12 @@ jobs:
       run: |
         rm owrtsdk/x86-64/staging_dir/host/bin/cmake
         cp -s $(which cmake) owrtsdk/x86-64/staging_dir/host/bin/cmake
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         path: asterisk-modules/asterisk-chan-quectel
     - name: Configure project
-      run: cmake -P asterisk-modules/asterisk-chan-quectel/make-build-dir.cmake default ${{ matrix.ast }}
+      run: cmake -P asterisk-modules/asterisk-chan-quectel/configure-openwrt-makefile.cmake ${{ matrix.ast }}
     - name: Generate OpenWRT Makefile
       run: cmake -P asterisk-modules/asterisk-chan-quectel/install-openwrt-makefile.cmake
     - name: Show CMake variables
@@ -67,7 +67,7 @@ jobs:
       run: cat pkg-vars.cmake
     - name: Check OpenWRT SDK config file existience
       id: check-owrt-cfg
-      uses: andstor/file-existence-action@v2
+      uses: andstor/file-existence-action@v3
       with:
         files: "owrtsdk/x86-64/.config"
     - name: Prepare OpenWRT SDK (symlink)
@@ -88,7 +88,7 @@ jobs:
       run: ./build-opk.sh V=s
     - name: Check OpenWRT package existience
       id: check-owrt-ipk
-      uses: andstor/file-existence-action@v2
+      uses: andstor/file-existence-action@v3
       with:
         files: "asterisk-modules/asterisk-chan-quectel/install/openwrt/x86-64/bin/packages/*/strskx/*.ipk"
         fail: true

@@ -58,39 +58,14 @@
 #include "dc_config.h" /* dc_uconfig_fill() dc_gconfig_fill() dc_sconfig_fill()  */
 #include "errno.h"
 #include "error.h"
+#include "eventfd.h"
 #include "helpers.h"
 #include "monitor_thread.h"
+#include "msg_tech.h"
 #include "mutils.h" /* ARRAY_LEN() */
 #include "pcm.h"
-#include "pdiscovery.h" /* pdiscovery_lookup() pdiscovery_init() pdiscovery_fini() */
 #include "smsdb.h"
 #include "tty.h"
-
-static const char* const dev_state_strs[4] = {"stop", "restart", "remove", "start"};
-
-public_state_t* gpublic;
-
-const char* attribute_const dev_state2str(dev_state_t state) { return enum2str(state, dev_state_strs, ARRAY_LEN(dev_state_strs)); }
-
-dev_state_t attribute_const str2dev_state(const char* str)
-{
-    if (!str) {
-        return DEV_STATE_STOPPED;
-    }
-
-    const int res = str2enum(str, dev_state_strs, ARRAY_LEN(dev_state_strs));
-    if (res < 0) {
-        return DEV_STATE_STOPPED;
-    } else {
-        return (dev_state_t)res;
-    }
-}
-
-const char* attribute_const dev_state2str_msg(dev_state_t state)
-{
-    static const char* const states[] = {"Stop scheduled", "Restart scheduled", "Removal scheduled", "Start scheduled"};
-    return enum2str(state, states, ARRAY_LEN(states));
-}
 
 static int soundcard_init(struct pvt* pvt)
 {
@@ -164,10 +139,10 @@ void pvt_disconnect(struct pvt* pvt)
             pvt->ocard_channels = 0;
         }
     } else {
-        tty_close(PVT_STATE(pvt, audio_tty), pvt->audio_fd);
+        tty_close(CONF_UNIQ(pvt, audio_tty), pvt->audio_fd);
     }
 
-    tty_close(PVT_STATE(pvt, data_tty), pvt->data_fd);
+    tty_close(CONF_UNIQ(pvt, data_tty), pvt->data_fd);
 
     pvt->data_fd  = -1;
     pvt->audio_fd = -1;
@@ -181,6 +156,8 @@ void pvt_disconnect(struct pvt* pvt)
     pvt->rssi           = 0;
     pvt->act            = 0;
     pvt->operator= 0;
+
+    memset(&pvt->module_time, 0, sizeof(pvt->module_time));
 
     ast_string_field_set(pvt, manufacturer, NULL);
     ast_string_field_set(pvt, model, NULL);
@@ -196,12 +173,11 @@ void pvt_disconnect(struct pvt* pvt)
     ast_string_field_set(pvt, cell_id, NULL);
     ast_string_field_set(pvt, sms_scenter, NULL);
     ast_string_field_set(pvt, subscriber_number, NULL);
-    ast_string_field_set(pvt, module_time, NULL);
 
     pvt->has_subscriber_number = 0;
 
     pvt->gsm_registered   = 0;
-    pvt->has_sms          = 0;
+    pvt->has_sms          = CONF_SHARED(pvt, msg_direct) ? 0 : 1;
     pvt->has_voice        = 0;
     pvt->has_call_waiting = 0;
 
@@ -215,6 +191,7 @@ void pvt_disconnect(struct pvt* pvt)
     pvt->cwaiting           = 0;
     pvt->outgoing_sms       = 0;
     pvt->incoming_sms_index = -1;
+    pvt->incoming_sms_type  = RES_UNKNOWN;
     pvt->volume_sync_step   = VOLUME_SYNC_BEGIN;
 
     pvt->current_state = DEV_STATE_STOPPED;
@@ -222,57 +199,12 @@ void pvt_disconnect(struct pvt* pvt)
     /* clear statictics */
     memset(&pvt->stat, 0, sizeof(pvt->stat));
 
-    ast_copy_string(PVT_STATE(pvt, data_tty), CONF_UNIQ(pvt, data_tty), sizeof(PVT_STATE(pvt, data_tty)));
-    ast_copy_string(PVT_STATE(pvt, audio_tty), CONF_UNIQ(pvt, audio_tty), sizeof(PVT_STATE(pvt, audio_tty)));
-
     if (pvt->local_format_cap) {
         ao2_cleanup(pvt->local_format_cap);
         pvt->local_format_cap = NULL;
     }
 
     ast_verb(3, "[%s] Disconnected\n", PVT_ID(pvt));
-}
-
-#/* called with pvt lock hold */
-
-static int pvt_discovery(struct pvt* pvt)
-{
-    char devname[DEVNAMELEN];
-    char imei[IMEI_SIZE + 1];
-    char imsi[IMSI_SIZE + 1];
-
-    int resolved;
-    if (CONF_UNIQ(pvt, data_tty)[0] == 0 && CONF_UNIQ(pvt, audio_tty)[0] == 0) {
-        char* data_tty;
-        char* audio_tty;
-
-        ast_copy_string(devname, PVT_ID(pvt), sizeof(devname));
-        ast_copy_string(imei, CONF_UNIQ(pvt, imei), sizeof(imei));
-        ast_copy_string(imsi, CONF_UNIQ(pvt, imsi), sizeof(imsi));
-
-        ast_debug(3, "[%s] Trying ports discovery for%s%s%s%s\n", PVT_ID(pvt), imei[0] == 0 ? "" : " IMEI ", imei, imsi[0] == 0 ? "" : " IMSI ", imsi);
-        ast_mutex_unlock(&pvt->lock);
-        // sleep(10); // test
-        resolved = pdiscovery_lookup(devname, imei, imsi, &data_tty, &audio_tty);
-        ast_mutex_lock(&pvt->lock);
-
-        if (resolved) {
-            ast_copy_string(PVT_STATE(pvt, data_tty), data_tty, sizeof(PVT_STATE(pvt, data_tty)));
-            ast_copy_string(PVT_STATE(pvt, audio_tty), audio_tty, sizeof(PVT_STATE(pvt, audio_tty)));
-
-            ast_free(audio_tty);
-            ast_free(data_tty);
-            ast_verb(3, "[%s]%s%s%s%s found on data_tty=%s audio_tty=%s\n", PVT_ID(pvt), imei[0] == 0 ? "" : " IMEI ", imei, imsi[0] == 0 ? "" : " IMSI ", imsi,
-                     PVT_STATE(pvt, data_tty), PVT_STATE(pvt, audio_tty));
-        } else {
-            ast_debug(3, "[%s] Not found ports for%s%s%s%s\n", PVT_ID(pvt), imei[0] == 0 ? "" : " IMEI ", imei, imsi[0] == 0 ? "" : " IMSI ", imsi);
-        }
-    } else {
-        ast_copy_string(PVT_STATE(pvt, data_tty), CONF_UNIQ(pvt, data_tty), sizeof(PVT_STATE(pvt, data_tty)));
-        ast_copy_string(PVT_STATE(pvt, audio_tty), CONF_UNIQ(pvt, audio_tty), sizeof(PVT_STATE(pvt, audio_tty)));
-        resolved = 1;
-    }
-    return !resolved;
 }
 
 static void fd_set_nonblock(const int fd)
@@ -292,13 +224,8 @@ static void pvt_start(struct pvt* const pvt)
 
     pvt_monitor_stop(pvt);
 
-    if (pvt_discovery(pvt)) {
-        return;
-    }
-
-    ast_verb(3, "[%s] Trying to connect on %s...\n", PVT_ID(pvt), PVT_STATE(pvt, data_tty));
-
-    pvt->data_fd = tty_open(PVT_STATE(pvt, data_tty), (CONF_UNIQ(pvt, uac) == TRIBOOL_NONE) ? 2 : 0);
+    ast_verb(3, "[%s] Trying to connect data port %s...\n", PVT_ID(pvt), CONF_UNIQ(pvt, alsadev));
+    pvt->data_fd = tty_open(CONF_UNIQ(pvt, data_tty), (CONF_UNIQ(pvt, uac) == TRIBOOL_NONE) ? 2 : 0);
     if (pvt->data_fd < 0) {
         return;
     }
@@ -310,7 +237,8 @@ static void pvt_start(struct pvt* const pvt)
         }
     } else {
         // TODO: delay until device activate voice call or at pvt_on_create_1st_channel()
-        pvt->audio_fd = tty_open(PVT_STATE(pvt, audio_tty), pvt->is_simcom);
+        ast_verb(3, "[%s] Trying to open audio port %s...\n", PVT_ID(pvt), CONF_UNIQ(pvt, audio_tty));
+        pvt->audio_fd = tty_open(CONF_UNIQ(pvt, audio_tty), pvt->is_simcom);
         if (pvt->audio_fd < 0) {
             goto cleanup_datafd;
         }
@@ -349,11 +277,11 @@ static void pvt_start(struct pvt* const pvt)
 
 cleanup_audiofd:
     if (pvt->audio_fd > 0) {
-        tty_close(PVT_STATE(pvt, audio_tty), pvt->audio_fd);
+        tty_close(CONF_UNIQ(pvt, audio_tty), pvt->audio_fd);
     }
 
 cleanup_datafd:
-    tty_close(PVT_STATE(pvt, data_tty), pvt->data_fd);
+    tty_close(CONF_UNIQ(pvt, data_tty), pvt->data_fd);
 }
 
 #/* */
@@ -376,18 +304,52 @@ static void pvt_destroy(struct pvt* const pvt)
     pvt_free(pvt);
 }
 
-static void* do_discovery(void* arg)
-{
-    struct public_state* state = (struct public_state*)arg;
+// device manager
 
-    while (!state->unloading_flag) {
+static const eventfd_t DEV_MANAGER_CMD_SCAN = 1;
+static const eventfd_t DEV_MANAGER_CMD_STOP = 2;
+
+static void dev_manager_threadproc_state(struct public_state* const state)
+{
+    int manager_interval = SCONF_GLOBAL(state, manager_interval);
+    const int fd         = state->dev_manager_event;
+
+    auto int ev_wait()
+    {
+        int t = manager_interval * 1000;
+        return at_wait(fd, &t);
+    }
+
+    while (1) {
+        if (ev_wait() == fd) {
+            eventfd_t val = 0;
+            if (eventfd_read(fd, &val)) {
+                ast_log(LOG_ERROR, "[dev-manager] Fail to read command - exiting\n");
+                break;
+            }
+
+            if (val == DEV_MANAGER_CMD_SCAN) {
+                ast_debug(3, "[dev-manager] Got scan event\n");
+                manager_interval = SCONF_GLOBAL(state, manager_interval);
+            } else if (val == DEV_MANAGER_CMD_STOP) {
+                ast_debug(3, "[dev-manager] Got exit event\n");
+                break;
+            } else {
+                ast_log(LOG_WARNING, "[dev-manager] Unknown command: %d - exiting\n", (int)val);
+                continue;
+            }
+        }
+
+        // timeout
         struct pvt* pvt;
         /* read lock for avoid deadlock when IMEI/IMSI discovery */
         AST_RWLIST_RDLOCK(&state->devices);
         AST_RWLIST_TRAVERSE(&state->devices, pvt, entry) {
             SCOPED_MUTEX(pvt_lock, &pvt->lock);
 
-            pvt->must_remove = 0;
+            if (pvt->must_remove) {
+                continue;
+            }
 
             if (pvt->restart_time != RESTATE_TIME_NOW) {
                 continue;
@@ -398,20 +360,24 @@ static void* do_discovery(void* arg)
 
             switch (pvt->desired_state) {
                 case DEV_STATE_RESTARTED:
+                    ast_debug(4, "[dev-manager][%s] Restarting device\n", PVT_ID(pvt));
                     pvt_monitor_stop(pvt);
                     pvt->desired_state = DEV_STATE_STARTED;
                     /* fall through */
 
                 case DEV_STATE_STARTED:
+                    ast_debug(4, "[dev-manager][%s] Starting device\n", PVT_ID(pvt));
                     pvt_start(pvt);
                     break;
 
                 case DEV_STATE_REMOVED:
+                    ast_debug(4, "[dev-manager][%s] Removing device\n", PVT_ID(pvt));
                     pvt_monitor_stop(pvt);
                     pvt->must_remove = 1;
                     break;
 
                 case DEV_STATE_STOPPED:
+                    ast_debug(4, "[dev-manager][%s] Stopping device\n", PVT_ID(pvt));
                     pvt_monitor_stop(pvt);
                     break;
             }
@@ -419,11 +385,19 @@ static void* do_discovery(void* arg)
         AST_RWLIST_UNLOCK(&state->devices);
 
         /* actual device removal here for avoid long (discovery) time write lock on device list in loop above */
-        AST_RWLIST_WRLOCK(&state->devices);
+
+        if (AST_RWLIST_TRYWRLOCK(&state->devices)) {
+            continue;
+        }
+
         AST_RWLIST_TRAVERSE_SAFE_BEGIN(&state->devices, pvt, entry)
             {
-                ast_mutex_lock(&pvt->lock);
+                if (ast_mutex_trylock(&pvt->lock)) {
+                    continue;
+                }
+
                 if (pvt->must_remove) {
+                    ast_debug(4, "[dev-manager][%s] Freeing device\n", PVT_ID(pvt));
                     AST_RWLIST_REMOVE_CURRENT(entry);
                     pvt_free(pvt);
                 } else {
@@ -432,59 +406,44 @@ static void* do_discovery(void* arg)
             }
         AST_RWLIST_TRAVERSE_SAFE_END;
         AST_RWLIST_UNLOCK(&state->devices);
-
-        /* Go to sleep (only if we are not unloading) */
-        if (!state->unloading_flag) {
-            sleep(SCONF_GLOBAL(state, discovery_interval));
-        }
     }
+}
 
+static void* dev_manager_threadproc(void* arg)
+{
+    struct public_state* const state = (struct public_state* const)arg;
+    dev_manager_threadproc_state(state);
     return NULL;
 }
 
-#/* */
-
-static int discovery_restart(public_state_t* state)
+static int dev_manager_start(struct public_state* const state)
 {
-    SCOPED_MUTEX(state_discovery_lock, &state->discovery_lock);
-
-    if (state->discovery_thread == AST_PTHREADT_STOP) {
-        return 0;
-    }
-
-    if (state->discovery_thread == pthread_self()) {
-        ast_log(LOG_WARNING, "Cannot kill myself\n");
+    if (ast_pthread_create_background(&state->dev_manager_thread, NULL, dev_manager_threadproc, state) < 0) {
+        state->dev_manager_thread = AST_PTHREADT_NULL;
         return -1;
     }
 
-    if (state->discovery_thread != AST_PTHREADT_NULL) {
-        /* Wake up the thread */
-        pthread_kill(state->discovery_thread, SIGURG);
-    } else {
-        /* Start a new monitor */
-        if (ast_pthread_create_background(&state->discovery_thread, NULL, do_discovery, state) < 0) {
-            ast_log(LOG_ERROR, "Unable to start discovery thread\n");
-            return -1;
-        }
-    }
     return 0;
 }
 
-#/* */
-
-static void discovery_stop(public_state_t* state)
+static void dev_manager_scan(const struct public_state* const state)
 {
-    /* signal for discovery unloading */
-    state->unloading_flag = 1;
+    if (eventfd_write(state->dev_manager_event, DEV_MANAGER_CMD_SCAN)) {
+        ast_log(LOG_ERROR, "Unable to signal device manager thread\n");
+    }
+}
 
-    SCOPED_MUTEX(state_discovery_lock, &state->discovery_lock);
-    if (state->discovery_thread && (state->discovery_thread != AST_PTHREADT_STOP) && (state->discovery_thread != AST_PTHREADT_NULL)) {
-        //		pthread_cancel(state->discovery_thread);
-        pthread_kill(state->discovery_thread, SIGURG);
-        pthread_join(state->discovery_thread, NULL);
+static void dev_manager_stop(struct public_state* const state)
+{
+    if (eventfd_write(state->dev_manager_event, DEV_MANAGER_CMD_STOP)) {
+        ast_log(LOG_ERROR, "Unable to signal device manager thread\n");
     }
 
-    state->discovery_thread = AST_PTHREADT_STOP;
+    if (state->dev_manager_thread && (state->dev_manager_thread != AST_PTHREADT_STOP) && (state->dev_manager_thread != AST_PTHREADT_NULL)) {
+        pthread_join(state->dev_manager_thread, NULL);
+    }
+
+    state->dev_manager_thread = AST_PTHREADT_NULL;
 }
 
 #/* */
@@ -626,22 +585,23 @@ int pvt_ready4voice_call(const struct pvt* pvt, const struct cpvt* current_cpvt,
 
 #/* */
 
-static int can_dial(struct pvt* pvt, unsigned int opts, const struct ast_channel* requestor)
+static int can_dial(struct pvt* pvt, unsigned int opts)
 {
     /* not allow hold requester channel :) */
     /* FIXME: requestor may be just proxy/masquerade for real channel */
     //	use ast_bridged_channel(chan) ?
     //	use requestor->tech->get_base_channel() ?
 
-    if (opts & CALL_FLAG_INTERNAL_REQUEST) {
-        return 1;
-    }
+    return pvt_ready4voice_call(pvt, NULL, opts);
+}
 
-    if ((opts & CALL_FLAG_HOLD_OTHER) == CALL_FLAG_HOLD_OTHER && channel_self_request(pvt, requestor)) {
+static int can_send_message(struct pvt* pvt, attribute_unused unsigned int opts)
+{
+    if (!pvt->connected || !pvt->initialized || !pvt->has_sms || !pvt->gsm_registered || !pvt_enabled(pvt)) {
         return 0;
     }
 
-    return pvt_ready4voice_call(pvt, NULL, opts);
+    return 1;
 }
 
 void pvt_unlock(struct pvt* const pvt)
@@ -733,10 +693,22 @@ struct pvt* pvt_find_by_ext(const char* name)
     return pvt;
 }
 
-#/* like find_device but for resource spec; return locked! pvt or NULL */
-
-struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists)
+static struct pvt* pvt_find_by_resource_fn(struct public_state* state, const char* resource, unsigned int opts, int (*pvt_test_fn)(struct pvt*, unsigned int),
+                                           const struct ast_channel* requestor, int* exists)
 {
+    auto int test_fn(struct pvt * pvt)
+    {
+        if (opts & CALL_FLAG_INTERNAL_REQUEST) {
+            return 1;
+        }
+
+        if ((opts & CALL_FLAG_HOLD_OTHER) == CALL_FLAG_HOLD_OTHER && channel_self_request(pvt, requestor)) {
+            return 0;
+        }
+
+        return (*pvt_test_fn)(pvt, opts);
+    }
+
     int group;
     size_t i;
     size_t j;
@@ -759,7 +731,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
 
                 if (CONF_SHARED(pvt, group) == group) {
                     *exists = 1;
-                    if (can_dial(pvt, opts, requestor)) {
+                    if (test_fn(pvt)) {
                         found = pvt;
                         break;
                     }
@@ -802,7 +774,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
                 *exists = 1;
 
                 ast_mutex_lock(&pvt->lock);
-                if (can_dial(pvt, opts, requestor)) {
+                if (test_fn(pvt)) {
                     pvt->group_last_used = 1;
                     found                = pvt;
                     break;
@@ -842,7 +814,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
             *exists = 1;
 
             ast_mutex_lock(&pvt->lock);
-            if (can_dial(pvt, opts, requestor)) {
+            if (test_fn(pvt)) {
                 pvt->prov_last_used = 1;
                 found               = pvt;
                 break;
@@ -883,7 +855,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
             *exists = 1;
 
             ast_mutex_lock(&pvt->lock);
-            if (can_dial(pvt, opts, requestor)) {
+            if (test_fn(pvt)) {
                 pvt->sim_last_used = 1;
                 found              = pvt;
                 break;
@@ -895,7 +867,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
             ast_mutex_lock(&pvt->lock);
             if (!strcmp(pvt->imei, &resource[2])) {
                 *exists = 1;
-                if (can_dial(pvt, opts, requestor)) {
+                if (test_fn(pvt)) {
                     found = pvt;
                     break;
                 }
@@ -907,7 +879,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
             ast_mutex_lock(&pvt->lock);
             if (!strcmp(pvt->iccid, &resource[2])) {
                 *exists = 1;
-                if (can_dial(pvt, opts, requestor)) {
+                if (test_fn(pvt)) {
                     found = pvt;
                     break;
                 }
@@ -919,7 +891,7 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
             ast_mutex_lock(&pvt->lock);
             if (!strcmp(PVT_ID(pvt), resource)) {
                 *exists = 1;
-                if (can_dial(pvt, opts, requestor)) {
+                if (test_fn(pvt)) {
                     found = pvt;
                     break;
                 }
@@ -930,6 +902,16 @@ struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* reso
 
     AST_RWLIST_UNLOCK(&state->devices);
     return found;
+}
+
+struct pvt* pvt_find_by_resource_ex(struct public_state* state, const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists)
+{
+    return pvt_find_by_resource_fn(state, resource, opts, &can_dial, requestor, exists);
+}
+
+struct pvt* pvt_msg_find_by_resource_ex(struct public_state* state, const char* resource, unsigned int opts, const struct ast_channel* requestor, int* exists)
+{
+    return pvt_find_by_resource_fn(state, resource, opts, &can_send_message, requestor, exists);
 }
 
 struct cpvt* pvt_channel_find_by_call_idx(struct pvt* pvt, int call_idx)
@@ -1148,15 +1130,17 @@ static struct pvt* pvt_create(const pvt_config_t* settings)
     pvt->audio_fd           = -1;
     pvt->data_fd            = -1;
     pvt->gsm_reg_status     = -1;
+    pvt->has_sms            = SCONFIG(settings, msg_direct) ? 0 : 1;
     pvt->incoming_sms_index = -1;
-    pvt->desired_state      = SCONFIG(settings, initstate);
+    pvt->incoming_sms_type  = RES_UNKNOWN;
+    pvt->desired_state      = SCONFIG(settings, init_state);
 
     ast_string_field_init(pvt, 15);
     ast_string_field_set(pvt, provider_name, "NONE");
     ast_string_field_set(pvt, subscriber_number, NULL);
 
     /* and copy settings */
-    memcpy(&pvt->settings, settings, sizeof(pvt->settings));
+    pvt->settings = *settings;
 
     pvt->empty_str.__AST_STR_LEN = 1;
     pvt->empty_str.__AST_STR_TS  = DS_STATIC;
@@ -1181,7 +1165,7 @@ void pvt_try_restate(struct pvt* pvt)
 {
     if (pvt_time4restate(pvt)) {
         pvt->restart_time = RESTATE_TIME_NOW;
-        discovery_restart(gpublic);
+        dev_manager_scan(gpublic);
     }
 }
 
@@ -1191,22 +1175,20 @@ static int pvt_reconfigure(struct pvt* pvt, const pvt_config_t* settings, restat
 {
     int rv = 0;
 
-    if (SCONFIG(settings, initstate) == DEV_STATE_REMOVED) {
+    if (SCONFIG(settings, init_state) == DEV_STATE_REMOVED) {
         /* handle later, in one place */
         pvt->must_remove = 1;
     } else {
         /* check what changes require starting or stopping */
-        if (pvt->desired_state != SCONFIG(settings, initstate)) {
-            pvt->desired_state = SCONFIG(settings, initstate);
+        if (pvt->desired_state != SCONFIG(settings, init_state)) {
+            pvt->desired_state = SCONFIG(settings, init_state);
 
             rv                = pvt_time4restate(pvt);
             pvt->restart_time = rv ? RESTATE_TIME_NOW : when;
         }
 
         /* check what config changes require restaring */
-        else if (strcmp(UCONFIG(settings, audio_tty), CONF_UNIQ(pvt, audio_tty)) || strcmp(UCONFIG(settings, data_tty), CONF_UNIQ(pvt, data_tty)) ||
-                 strcmp(UCONFIG(settings, imei), CONF_UNIQ(pvt, imei)) || strcmp(UCONFIG(settings, imsi), CONF_UNIQ(pvt, imsi)) ||
-                 SCONFIG(settings, resetquectel) != CONF_SHARED(pvt, resetquectel) || SCONFIG(settings, callwaiting) != CONF_SHARED(pvt, callwaiting)) {
+        else if (pvt_config_compare(settings, &pvt->settings)) {
             /* TODO: schedule restart */
             pvt->desired_state = DEV_STATE_RESTARTED;
 
@@ -1215,7 +1197,7 @@ static int pvt_reconfigure(struct pvt* pvt, const pvt_config_t* settings, restat
         }
 
         /* and copy settings */
-        memcpy(&pvt->settings, settings, sizeof(pvt->settings));
+        pvt->settings = *settings;
     }
     return rv;
 }
@@ -1314,7 +1296,7 @@ static int reload_config(public_state_t* state, int recofigure, restate_time_t w
             }
 
             /* new device */
-            if (SCONFIG(&settings, initstate) == DEV_STATE_REMOVED) {
+            if (SCONFIG(&settings, init_state) == DEV_STATE_REMOVED) {
                 ast_log(LOG_NOTICE, "Skipping device %s as disabled\n", cat);
                 continue;
             }
@@ -1377,11 +1359,11 @@ const struct ast_format* pvt_get_audio_format(const struct pvt* const pvt)
     }
 }
 
-static attribute_const size_t pvt_get_audio_frame_size_r(unsigned int ptime, const unsigned int sr)
+static size_t pvt_get_audio_frame_size_r(unsigned int ptime, const unsigned int sr)
 {
     size_t res  = ptime;
     res        *= sr / 1000;
-    res        *= sizeof(short);
+    res        *= sizeof(int16_t);
 
     return res;
 }
@@ -1437,14 +1419,13 @@ static int load_module()
         return AST_MODULE_LOAD_DECLINE;
     }
 
-    const int rv = public_state_init(gpublic);
-    if (rv != AST_MODULE_LOAD_SUCCESS) {
+    const int res = public_state_init(gpublic);
+    if (res != AST_MODULE_LOAD_SUCCESS) {
         ast_free(gpublic);
         gpublic = NULL;
     }
 
-    pdiscovery_init();
-    return rv;
+    return res;
 }
 
 #/* */
@@ -1467,7 +1448,6 @@ static unsigned int get_default_framing() { return PTIME_CAPTURE }
 
 #endif
 
-
 static int public_state_init(struct public_state* state)
 {
     int rv = AST_MODULE_LOAD_DECLINE;
@@ -1477,53 +1457,67 @@ static int public_state_init(struct public_state* state)
         return rv;
     }
 
+    state->dev_manager_event  = eventfd_create();
+    state->dev_manager_thread = AST_PTHREADT_NULL;
+
     AST_RWLIST_HEAD_INIT(&state->devices);
-    SCOPED_LOCK(state_discovery_lock, &state->discovery_lock, ast_mutex_init, ast_mutex_destroy);
 
-    state->discovery_thread = AST_PTHREADT_NULL;
-
-    if (!reload_config(state, 0, RESTATE_TIME_NOW, NULL)) {
-        rv = AST_MODULE_LOAD_FAILURE;
-        if (!discovery_restart(state)) {
-            /* set preferred capabilities */
-            if (!(channel_tech.capabilities = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT))) {
-                return AST_MODULE_LOAD_FAILURE;
-            }
-            append_fmt(channel_tech.capabilities, ast_format_slin);
-            append_fmt(channel_tech.capabilities, ast_format_slin16);
-            append_fmt(channel_tech.capabilities, ast_format_slin48);
-            ast_format_cap_set_framing(channel_tech.capabilities, get_default_framing());
-
-            /* register our channel type */
-            if (ast_channel_register(&channel_tech)) {
-                ao2_cleanup(channel_tech.capabilities);
-                channel_tech.capabilities = NULL;
-                ast_log(LOG_ERROR, "Unable to register channel class %s\n", channel_tech.type);
-            } else {
-                smsdb_init();
-#ifdef BUILD_APPLICATIONS
-                app_register();
-#endif
-                cli_register();
-
-                return AST_MODULE_LOAD_SUCCESS;
-            }
-            discovery_stop(state);
-        } else {
-            ast_log(LOG_ERROR, "Unable to create discovery thread\n");
-        }
-        devices_destroy(state);
-    } else {
+    if (reload_config(state, 0, RESTATE_TIME_NOW, NULL)) {
         ast_log(LOG_ERROR, "Errors reading config file " CONFIG_FILE ", Not loading module\n");
+        AST_RWLIST_HEAD_DESTROY(&state->devices);
+        return rv;
     }
 
-    AST_RWLIST_HEAD_DESTROY(&state->devices);
-    return rv;
+    rv = AST_MODULE_LOAD_FAILURE;
+
+    if (dev_manager_start(state)) {
+        ast_log(LOG_ERROR, "Unable to create device manager thread\n");
+        devices_destroy(state);
+        AST_RWLIST_HEAD_DESTROY(&state->devices);
+        return rv;
+    }
+
+    /* set preferred capabilities */
+    if (!(channel_tech.capabilities = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT))) {
+        rv = AST_MODULE_LOAD_FAILURE;
+        ast_log(LOG_ERROR, "Unable to create channel capabilities\n");
+        dev_manager_stop(state);
+        devices_destroy(state);
+        AST_RWLIST_HEAD_DESTROY(&state->devices);
+        return rv;
+    }
+
+    append_fmt(channel_tech.capabilities, ast_format_slin);
+    append_fmt(channel_tech.capabilities, ast_format_slin16);
+    append_fmt(channel_tech.capabilities, ast_format_slin48);
+    ast_format_cap_set_framing(channel_tech.capabilities, get_default_framing());
+
+    if (ast_channel_register(&channel_tech)) {
+        ast_log(LOG_ERROR, "Unable to register channel class %s\n", channel_tech.type);
+        ao2_cleanup(channel_tech.capabilities);
+        channel_tech.capabilities = NULL;
+        dev_manager_stop(state);
+        devices_destroy(state);
+        AST_RWLIST_HEAD_DESTROY(&state->devices);
+        return rv;
+    }
+
+    smsdb_init();
+#ifdef WITH_APPLICATIONS
+    app_register();
+#endif
+
+#ifdef WITH_MSG_TECH
+    msg_tech_register();
+#endif
+    cli_register();
+
+    return AST_MODULE_LOAD_SUCCESS;
 }
 
 #/* */
 
-static void public_state_fini(struct public_state* state)
+static void public_state_fini(struct public_state* const state)
 {
     /* First, take us out of the channel loop */
     ast_channel_unregister(&channel_tech);
@@ -1533,23 +1527,27 @@ static void public_state_fini(struct public_state* state)
     /* Unregister the CLI */
     cli_unregister();
 
-#ifdef BUILD_APPLICATIONS
+#ifdef WITH_MSG_TECH
+    msg_tech_unregister();
+#endif
+
+#ifdef WITH_APPLICATIONS
     app_unregister();
 #endif
 
-    discovery_stop(state);
+    smsdb_atexit();
+
+    dev_manager_stop(state);
     devices_destroy(state);
 
-    ast_mutex_destroy(&state->discovery_lock);
+    eventfd_close(&state->dev_manager_event);
     AST_RWLIST_HEAD_DESTROY(&state->devices);
 
     ast_threadpool_shutdown(gpublic->threadpool);
-    smsdb_atexit();
 }
 
 static int unload_module()
 {
-    pdiscovery_fini();
     public_state_fini(gpublic);
     ast_free(gpublic);
     gpublic = NULL;
@@ -1564,7 +1562,7 @@ void pvt_reload(restate_time_t when)
 
     reload_config(gpublic, 1, when, &dev_reload);
     if (dev_reload > 0) {
-        discovery_restart(gpublic);
+        dev_manager_scan(gpublic);
     }
 }
 

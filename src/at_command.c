@@ -40,7 +40,7 @@ DECLARE_AT_CMD(chld2, "+CHLD=2");
  * \return a string describing the given command
  */
 
-const char* attribute_const at_cmd2str(at_cmd_t cmd)
+const char* at_cmd2str(at_cmd_t cmd)
 {
     static const char* const cmds[] = {AT_COMMANDS_TABLE(AT_CMD_AS_STRING)};
 
@@ -158,7 +158,7 @@ int at_enqueue_initialization(struct cpvt* cpvt)
     DECLARE_AT_CMD(creg, "+CREG?");
     DECLARE_AT_CMD(cnum, "+CNUM");
 
-    DECLARE_AT_CMD(cssn, "+CSSN=1,1");
+    DECLARE_AT_CMD(cssn, "+CSSN=0,0");
     DECLARE_AT_CMD(cmgf, "+CMGF=0");
     DECLARE_AT_CMD(cscs, "+CSCS=\"UCS2\"");
 
@@ -201,7 +201,7 @@ int at_enqueue_initialization(struct cpvt* cpvt)
 
     /* customize list */
     for (in = out = 0; in < ARRAY_LEN(st_cmds); ++in) {
-        if (st_cmds[in].cmd == CMD_AT_Z && !CONF_SHARED(pvt, resetquectel)) {
+        if (st_cmds[in].cmd == CMD_AT_Z && !CONF_SHARED(pvt, reset_modem)) {
             continue;
         }
 
@@ -229,9 +229,9 @@ int at_enqueue_initialization(struct cpvt* cpvt)
                 }
 
                 if (CONF_SHARED(pvt, msg_direct) > 0) {
-                    err = at_fill_generic_cmd(&dyn_cmd, "AT+CNMI=2,2,2,0,%d\r", CONF_SHARED(pvt, resetquectel) ? 1 : 0);
+                    err = at_fill_generic_cmd(&dyn_cmd, "AT+CNMI=2,2,2,0,%d\r", CONF_SHARED(pvt, reset_modem) ? 1 : 0);
                 } else {
-                    err = at_fill_generic_cmd(&dyn_cmd, "AT+CNMI=2,1,0,2,%d\r", CONF_SHARED(pvt, resetquectel) ? 1 : 0);
+                    err = at_fill_generic_cmd(&dyn_cmd, "AT+CNMI=2,1,0,2,%d\r", CONF_SHARED(pvt, reset_modem) ? 1 : 0);
                 }
 
                 if (err) {
@@ -352,7 +352,8 @@ int at_enqueue_initialization_simcom(struct cpvt* cpvt)
     DECLARE_AT_CMD(cpcmreg, "+CPCMREG?");
     DECLARE_AT_CMD(clcc_1, "+CLCC=1");
     DECLARE_AT_CMD(cnsmod_1, "+CNSMOD=1");
-    DECLARE_AT_CMD(creg_init, "+CREG=2");
+    DECLARE_AT_CMD(cereg_init, "+CEREG=2");
+    DECLARE_AT_CMD(cereg_query, "+CEREG?");
     DECLARE_AT_CMD(autocsq_init, "+AUTOCSQ=1,1");
     DECLARE_AT_CMD(exunsol_init, "+EXUNSOL=\"SQ\",1");
     DECLARE_AT_CMD(clts_init, "+CLTS=1");
@@ -373,7 +374,8 @@ int at_enqueue_initialization_simcom(struct cpvt* cpvt)
         ATQ_CMD_DECLARE_STI(CMD_AT_CICCID, ciccid),
         ATQ_CMD_DECLARE_STI(CMD_AT_CPCMREG, cpcmreg),
         ATQ_CMD_DECLARE_ST(CMD_AT_CLCC, clcc_1),
-        ATQ_CMD_DECLARE_ST(CMD_AT_CREG_INIT, creg_init),
+        ATQ_CMD_DECLARE_STI(CMD_AT_CEREG_INIT, cereg_init),
+        ATQ_CMD_DECLARE_STI(CMD_AT_CEREG, cereg_query),
         ATQ_CMD_DECLARE_STI(CMD_AT_CNSMOD_1, cnsmod_1),
         ATQ_CMD_DECLARE_STI(CMD_AT_AUTOCSQ_INIT, autocsq_init),
         ATQ_CMD_DECLARE_STI(CMD_AT_EXUNSOL_INIT, exunsol_init),
@@ -475,7 +477,7 @@ static void pdus_clear(at_queue_cmd_t* cmds, ssize_t idx)
     }
 }
 
-static int pdus_build(pdu_part_t* const pdus, const char* msg, int csmsref, const char* destination, unsigned validity, int report_req)
+static int pdus_build(pdu_part_t* const pdus, const char* sca, const char* msg, int csmsref, const char* destination, unsigned validity, int report_req)
 {
     if (!pdus) {
         chan_quectel_err = E_BUILD_PDU;
@@ -497,7 +499,7 @@ static int pdus_build(pdu_part_t* const pdus, const char* msg, int csmsref, cons
         return msg_ucs2_len;
     }
 
-    const int res = pdu_build_mult(pdus, "", destination, msg_ucs2, msg_ucs2_len, validity, report_req, csmsref);
+    const int res = pdu_build_mult(pdus, sca, destination, msg_ucs2, msg_ucs2_len, validity, report_req, csmsref);
     return res;
 }
 
@@ -539,7 +541,7 @@ static int pdus_enqueue(struct cpvt* const cpvt, const pdu_part_t* const pdus, s
  * \param number -- the destination of the message
  * \param msg -- utf-8 encoded message
  */
-int at_enqueue_sms(struct cpvt* cpvt, const char* destination, const char* msg, unsigned validity_minutes, int report_req)
+int at_enqueue_sms(struct cpvt* cpvt, const char* sca, const char* destination, const char* msg, unsigned validity_minutes, int report_req)
 {
     struct pvt* const pvt = cpvt->pvt;
 
@@ -555,7 +557,7 @@ int at_enqueue_sms(struct cpvt* cpvt, const char* destination, const char* msg, 
     }
 
     RAII_VAR(pdu_part_t*, pdus, ast_calloc(sizeof(pdu_part_t), 255), ast_free);
-    const int pdus_len = pdus_build(pdus, msg, csmsref, destination, validity_minutes, !!report_req);
+    const int pdus_len = pdus_build(pdus, sca, msg, csmsref, destination, validity_minutes, !!report_req);
     if (pdus_len <= 0) {
         return pdus_len;
     }
@@ -758,7 +760,7 @@ int at_enqueue_set_ccwa(struct cpvt* cpvt, unsigned call_waiting)
         return -1;
     }
 
-    CONF_SHARED(cpvt->pvt, callwaiting) = cw;
+    CONF_SHARED(cpvt->pvt, call_waiting) = cw;
     return 0;
 }
 
@@ -987,15 +989,23 @@ void at_sms_retrieved(struct cpvt* cpvt, int confirm)
     struct pvt* const pvt = cpvt->pvt;
 
     if (pvt->incoming_sms_index >= 0) {
-        if (CONF_SHARED(pvt, autodeletesms)) {
+        if (CONF_SHARED(pvt, sms_autodelete)) {
             at_enqueue_delete_sms(cpvt, pvt->incoming_sms_index, TRIBOOL_NONE);
         }
         if (confirm) {
-            ast_log(LOG_WARNING, "[%s][SMS:%d] Message not retrieved\n", PVT_ID(pvt), pvt->incoming_sms_index);
+            switch (pvt->incoming_sms_type) {
+                case RES_CDSI:
+                    break;
+
+                default:
+                    ast_log(LOG_WARNING, "[%s][SMS:%d] Message not retrieved\n", PVT_ID(pvt), pvt->incoming_sms_index);
+                    break;
+            }
         }
     }
 
     pvt->incoming_sms_index = -1;
+    pvt->incoming_sms_type  = RES_UNKNOWN;
 }
 
 int at_enqueue_list_messages(struct cpvt* cpvt, enum msg_status_t stat)
@@ -1023,7 +1033,7 @@ int at_enqueue_list_messages(struct cpvt* cpvt, enum msg_status_t stat)
  * \param index -- index of message in store
  * \return 0 on success
  */
-int at_enqueue_retrieve_sms(struct cpvt* cpvt, int idx)
+int at_enqueue_retrieve_sms(struct cpvt* cpvt, int idx, int sms_type)
 {
     DECLARE_AT_CMDNT(cmgr, "+CMGR=%d");
 
@@ -1037,6 +1047,7 @@ int at_enqueue_retrieve_sms(struct cpvt* cpvt, int idx)
     }
 
     pvt->incoming_sms_index = idx;
+    pvt->incoming_sms_type  = sms_type;
 
     if (at_fill_generic_cmd(&cmd, AT_CMD(cmgr), idx)) {
         chan_quectel_err = E_CMD_FORMAT;
@@ -1054,6 +1065,7 @@ error:
     ast_log(LOG_WARNING, "[%s] Unable to read message %d\n", PVT_ID(pvt), idx);
 
     pvt->incoming_sms_index = -1;
+    pvt->incoming_sms_type  = RES_UNKNOWN;
     return -1;
 }
 
@@ -1216,7 +1228,7 @@ static int at_enqueue_msg_ack_n(struct cpvt *cpvt, int n, int uid)
 }
 #endif
 
-static int attribute_const map_hangup_cause(int hangup_cause)
+static int map_hangup_cause(int hangup_cause)
 {
     switch (hangup_cause) {
         // list of supported cause codes

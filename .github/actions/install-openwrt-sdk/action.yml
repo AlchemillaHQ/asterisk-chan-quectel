@@ -23,7 +23,7 @@ runs:
   steps:
     - name: Restore OpenWRT SDK from cache (${{ inputs.arch }})
       id: cache-owrt-sdk-restore
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v4
       with:
         path: owrtsdk
         key: openwrt-sdk-${{ inputs.openwrt-version }}-${{ inputs.target }}
@@ -60,7 +60,7 @@ runs:
     - name: Cache OpenWRT SDK (${{ inputs.arch }})
       id: cache-owrt-sdk-save
       if: steps.cache-owrt-sdk-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v3
+      uses: actions/cache/save@v4
       with:
         path: owrtsdk
         key: ${{ steps.cache-owrt-sdk-restore.outputs.cache-primary-key }}

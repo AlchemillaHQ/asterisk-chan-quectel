@@ -83,7 +83,25 @@ Supported modules:
         ```
 
     * `QuectelSendSms` application renamed to `QUECTEL_SEND_SMS` one.
+
+        The first parameter of this function may be a *resource string* e.g. `QUECTEL_SEND_SMS(g0,...)`.
+
     * `QuectelSendUssd` application renamed to `QUECTEL_SEND_USSD` one.
+
+  * Standard `MessageSend` funcion (application) may be used to send SMS-es:
+
+      Use `mobile` techonlogy. `MESSAGE(from)` field is ignored.
+
+      ```ini
+      same => n,Set(MESSAGE(body)=This is a short message)
+      same => n,Set(MESSAGE(to)=XXXXXXXXX)
+      same => n,MessageSend(mobile:quectel0)
+      ```
+
+  * Removed autodiscovery feature.
+
+      If you want to access device via `IMEI` or `IMSI` then *udev* rules is a better approach.
+      An example you may find in [tools/udev](tools/udev) folder.
 
 ## Configuration
 
@@ -97,7 +115,7 @@ Supported modules:
     Without multiparty calls audio handling is much simpler and uses less resources (CPU, memory, synchronization objects).
     I decided to turn off multiparty calls support by default.
     You can enable it but remember that multiparty calls were never working in UAC mode and even in TTY (serial) mode this support should be considered as **unstable**.
-    When `mutliparty` is *off* all multiparty calls are **activley rejected**.
+    When `mutliparty` is *off* all multiparty calls are **actively rejected**.
 
 * `dtmf` option is a on/**off** switch now.
 
@@ -152,7 +170,7 @@ Supported modules:
 
   * TX/RX gain is performed by module itself.
 
-        This channel driver just sends `AT+QMIC`/`AT+QRXGAIN` (`AT+CMICGAIN`/`AT+COUTGAIN` for *SimCOM* module) commands.
+    This channel driver just sends `AT+QMIC`/`AT+QRXGAIN` (`AT+CMICGAIN`/`AT+COUTGAIN` for *SimCOM* module) commands.
 
   * Default value is **-1** now - use current module setting, do not change gain.
   * Range: **0-65535** or **0-100%**.
@@ -173,9 +191,8 @@ Supported modules:
 
 * New `qhup` option (**on**/off).
 
-    For *Quectel* modules hang up calls using
-     `AT+QHUP` (*Hang up Call with a Specific Release Cause*)
-     or standard `AT+CHUP` (*Hang up Voice Call*) command.
+    For *Quectel* modules hang up calls using `AT+QHUP` (*Hang up Call with a Specific Release Cause*)
+    or standard `AT+CHUP` (*Hang up Voice Call*) command.
 
 * New `dsci` option (on/**off**).
 
@@ -185,24 +202,29 @@ Supported modules:
 * Removed `disablesms` option.
 * `smsdb` option in `[general]` section defaulted to `:memory:`
 
-    Internal *SQLite3* database is stored in memory by default now.\
+    Internal *SQLite3* database is stored in memory by default now.
     You can still put database into a file by specyfying its full path (not recommended).
 
     See also: [SQLIte3: In-Memory Databases](//www.sqlite.org/inmemorydb.html).
+
 * New `smsdb_backup` option in `[general]` section.
 
     Path to backup of SMS database created via `quectel sms db backup` command (see below).
+
+* Removed `imsi` and `imei` options.
+
+    Autodiscovery feature was removed (see above),
 
 ## Commands
 
 * `simcom` is an alias of `quectel` commands now.
 
     You may type `simcom…` command instead of `quectel…` one.
-    For example `quectel show device status` command is equivalent of `simcom show device status` one.
+    For example `quectel show device status` command is the equivalent of `simcom show device status` one.
 
 * More SMS commands.
 
-  `quectel sms <device> <number> <msg>…` command renamed to `quectel sms send <device> <number> <msg>…`.
+  `quectel sms <device> <number> <msg>…` command was renamed to `quectel sms send <device> <number> <msg>…`.
 
   Additional commands:
 
@@ -221,9 +243,9 @@ Supported modules:
 
 * Additional fields in `show device status` command.
 
-    Added `Access technology`, `Network Name`, `Short Network Name`, `Registered PLMN`, `Band` and `Module Time` fields:
+  * Added `Access technology`, `Network Name`, `Short Network Name`, `Registered PLMN`, `Band` and `Module Time` fields:
 
-    ```
+    ```txt
         -------------- Status -------------
     Device                  : quectel0
     State                   : Free
@@ -268,25 +290,25 @@ Supported modules:
 
     Some of theese fields are constantly updated via `act` and `csq` notifications (see `AT+QINDCFG` command).
 
-    Additional fields in (JSON-formatted) `QUECTEL` variable are also defined:
+  * Additional fields in (JSON-formatted) `QUECTEL` variable are defined:
 
-  * `network_name`,
-  * `short_network_name`,
-  * `privider`,
-  * `plmn`,
-  * `mcc`,
-  * `mnc`,
-  * `iccid`.
+    * `network_name`,
+    * `short_network_name`,
+    * `privider`,
+    * `plmn`,
+    * `mcc`,
+    * `mnc`,
+    * `iccid`.
 
     `PLMN` (*Public Land Mobile Network Code*) combines `MCC` (*Mobile Country Code*) and `MNC` (*Mobile Network Code*).
 
-    `SMS Service Center` is now decoded from *UCS-2*.
+  * `SMS Service Center` is now decoded from *UCS-2*.
 
 * Additional fields ins `quectel show device settings` command.
 
     Displaying new configuration options:
 
-    ````
+    ````txt
         ------------- Settings ------------
     Device                  : quectel0
     Audio UAC               : hw:Android
@@ -358,13 +380,13 @@ Supported modules:
 
     It is possible to address device by `ICCID` (`j:` prefix):
 
-    ```
+    ```ini
     exten => s,n,Dial(Quectel/j:898600700907A6019125/+79139131234)
     ```
 
 * Code (re)formatted by `clang-format` utility.
 
-    Links:
+  Links:
 
   * [ClangFormat](https://clang.llvm.org/docs/ClangFormat.html),
   * [Edit C++ in Visual Studio Code -- Code formatting](https://code.visualstudio.com/docs/cpp/cpp-ide#_code-formatting).
@@ -374,38 +396,46 @@ Supported modules:
 
   * Non-printable characters are C escaped using custom function based on `ast_escape_c`:
 
-        ```
-        DEBUG[11643]: at_read.c:93 at_read: [quectel0] [1][\r\n+QIND: "csq",27,99\r\n]
-        DEBUG[11654]: at_read.c:93 at_read: [quectel0] [1][\r\n+CPMS: 0,25,0,25,0,25\r\n\r\nOK\r\n]
-        DEBUG[11654]: at_read.c:93 at_read: [quectel0] [1][\r\n+QPCMV: 0,2\r\n\r\nOK\r\n]
-        DEBUG[13411]: at_queue.c:181 at_write: [quectel0] [AT+QSPN;+QNWINFO\r]
-        ```
+    ```log
+    DEBUG[11643]: at_read.c:93 at_read: [quectel0] [1][\r\n+QIND: "csq",27,99\r\n]
+    DEBUG[11654]: at_read.c:93 at_read: [quectel0] [1][\r\n+CPMS: 0,25,0,25,0,25\r\n\r\nOK\r\n]
+    DEBUG[11654]: at_read.c:93 at_read: [quectel0] [1][\r\n+QPCMV: 0,2\r\n\r\nOK\r\n]
+    DEBUG[13411]: at_queue.c:181 at_write: [quectel0] [AT+QSPN;+QNWINFO\r]
+    ```
 
   * Using *Unicode* characters in log messages.
 
-        Mostly arrows are used:
+    Mostly arrows are used:
 
-        ```
-        DEBUG[20486]: src/at_queue.c:128 at_queue_add: [quectel0][AT+QLTS=1] ↵ [OK][AT+QLTS=1\r] after head
-        DEBUG[20486]: src/at_queue.c:336 at_queue_run: [quectel0][AT+QLTS=1] → [AT+QLTS=1\r]
-        DEBUG[20486]: src/at_response.c:2718 show_response: [quectel0][AT+QLTS=1] ← [+QLTS][+QLTS: "2000/01/01,00:00:00+00,1"]
-        DEBUG[20486]: src/at_response.c:2718 show_response: [quectel0][AT+QLTS=1] ← [OK][OK]
-        DEBUG[20486]: src/at_response.c:246 at_response_ok: [quectel0][AT+QLTS=1] ✓
-        DEBUG[20486]: src/at_queue.c:72 at_queue_remove: [quectel0][AT+QLTS=1] ↳ [OK] tasks:0 
+    ```log
+    DEBUG[20486]: src/at_queue.c:128 at_queue_add: [quectel0][AT+QLTS=1] ↵ [OK][AT+QLTS=1\r] after head
+    DEBUG[20486]: src/at_queue.c:336 at_queue_run: [quectel0][AT+QLTS=1] → [AT+QLTS=1\r]
+    DEBUG[20486]: src/at_response.c:2718 show_response: [quectel0][AT+QLTS=1] ← [+QLTS][+QLTS: "2000/01/01,00:00:00+00,1"]
+    DEBUG[20486]: src/at_response.c:2718 show_response: [quectel0][AT+QLTS=1] ← [OK][OK]
+    DEBUG[20486]: src/at_response.c:246 at_response_ok: [quectel0][AT+QLTS=1] ✓
+    DEBUG[20486]: src/at_queue.c:72 at_queue_remove: [quectel0][AT+QLTS=1] ↳ [OK] tasks:0 
 
-        ```
+    ```
+
 * Redesigned SMS database.
+
+    Improved database locking.
+
 * Using modern serial port locking methods:
 
   * `ioctl(fd, TIOCGEXCL, &locking_status)` and `ioctl(fd, TIOCEXCL)`,
   * `flock(fd, LOCK_EX | LOCK_NB)`.
 
+* Heavy usage of *RAII* variables.
+
+    Using `RAII_VAR` and related macros (variables with *destructors*).
+
 * Using thread pools and task processors:
 
-    Reading and processing modem responses in separate threads.
+    Reading and processing modem responses are processed in separate threads.
     You may see basic statistics of used thread pools and task processors via `core show taskprocessors like chan-quectel` command.
 
-    ```
+    ```txt
     Asterisk*CLI> core show taskprocessors like chan-quectel
 
     Processor                                                               Processed   In Queue  Max Depth  Low water High water

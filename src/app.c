@@ -4,15 +4,14 @@
 
 #include "ast_config.h"
 
-#ifdef BUILD_APPLICATIONS
-
 #include <asterisk/app.h> /* AST_DECLARE_APP_ARGS() ... */
 #include <asterisk/json.h>
 #include <asterisk/module.h> /* ast_register_application2() ast_unregister_application() */
 #include <asterisk/pbx.h>    /* pbx_builtin_setvar_helper() */
 #include <asterisk/strings.h>
 
-#include "app.h"          /* app_register() app_unregister() */
+#include "app.h" /* app_register() app_unregister() */
+
 #include "chan_quectel.h" /* struct pvt */
 #include "error.h"
 #include "helpers.h" /* send_sms() ITEMS_OF() */
@@ -51,8 +50,8 @@ struct ast_channel;
             Sends a SMS on specified device.
         </synopsis>
         <syntax>
-            <parameter name="device" required="true">
-                <para>Id of device from configuration file.</para>
+            <parameter name="resource" required="true">
+                <para>Resource string as for Dial().</para>
             </parameter>
             <parameter name="destination" required="true">
                 <para>Recipient.</para>
@@ -204,7 +203,7 @@ static int app_send_sms_exec(attribute_unused struct ast_channel* channel, const
     /* clang-format off */
 
     AST_DECLARE_APP_ARGS(args,
-        AST_APP_ARG(device);
+        AST_APP_ARG(resource);
         AST_APP_ARG(number);
         AST_APP_ARG(message);
         AST_APP_ARG(validity);
@@ -221,8 +220,8 @@ static int app_send_sms_exec(attribute_unused struct ast_channel* channel, const
 
     AST_STANDARD_APP_ARGS(args, parse);
 
-    if (ast_strlen_zero(args.device)) {
-        ast_log(LOG_ERROR, "NULL device for message -- SMS will not be sent\n");
+    if (ast_strlen_zero(args.resource)) {
+        ast_log(LOG_ERROR, "NULL resource for message -- SMS will not be sent\n");
         return -1;
     }
 
@@ -231,8 +230,8 @@ static int app_send_sms_exec(attribute_unused struct ast_channel* channel, const
         return -1;
     }
 
-    if (send_sms(args.device, args.number, args.message, parse_validity(args.validity), parse_report_flag(args.report))) {
-        ast_log(LOG_ERROR, "[%s] %s\n", args.device, error2str(chan_quectel_err));
+    if (send_sms(args.resource, "", args.number, args.message, parse_validity(args.validity), parse_report_flag(args.report))) {
+        ast_log(LOG_ERROR, "[%s] %s\n", args.resource, error2str(chan_quectel_err));
         return -1;
     }
 
@@ -316,5 +315,3 @@ void app_unregister()
     ast_custom_function_unregister(&status_ex_function);
     ast_custom_function_unregister(&status_function);
 }
-
-#endif /* BUILD_APPLICATIONS */

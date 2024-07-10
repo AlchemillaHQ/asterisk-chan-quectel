@@ -1,0 +1,7 @@
+version: '3'
+
+includes:
+  debian:
+    taskfile: debian
+  ubuntu:
+    taskfile: ubuntu

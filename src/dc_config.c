@@ -9,35 +9,35 @@
 
 static const char DEFAULT_ALSADEV[]       = "hw:Android";
 static const char DEFAULT_ALSADEV_EXT[]   = "hw:0";
-static const int DEFAULT_DISCOVERY_INT    = 60;
+static const int DEFAULT_MANAGER_INTERVAL = 15;
 static const char DEFAULT_SMS_DB[]        = ":memory:";
 static const char DEFAULT_SMS_BACKUP_DB[] = "/var/lib/asterisk/smsdb-backup";
-static const int DEFAULT_CSMS_TTL         = 600;
+static const int DEFAULT_SMS_TTL          = 600;
 
 const static long DEF_DTMF_DURATION = 120;
 
-const char* attribute_const dc_cw_setting2str(call_waiting_t cw)
+const char* dc_cw_setting2str(call_waiting_t cw)
 {
     static const char* const options[] = {"disabled", "allowed", "auto"};
     return enum2str(cw, options, ARRAY_LEN(options));
 }
 
-tristate_bool_t attribute_const dc_str23stbool(const char* str)
+tristate_bool_t dc_str23stbool(const char* str)
 {
     if (!str) {
         return TRIBOOL_NONE;
     }
 
-    if (!strcasecmp(str, "on") || !strcasecmp(str, "true")) {
+    if (!strcasecmp(str, "on") || !strcasecmp(str, "true") || !strcasecmp(str, "yes")) {
         return TRIBOOL_TRUE;
-    } else if (!strcasecmp(str, "off") || !strcasecmp(str, "false")) {
+    } else if (!strcasecmp(str, "off") || !strcasecmp(str, "false") || !strcasecmp(str, "no")) {
         return TRIBOOL_FALSE;
     } else {
         return TRIBOOL_NONE;
     }
 }
 
-int attribute_const dc_str23stbool_ex(const char* str, tristate_bool_t* res, const char* none_val)
+int dc_str23stbool_ex(const char* str, tristate_bool_t* res, const char* none_val)
 {
     if (!str) {
         return -1;
@@ -49,10 +49,10 @@ int attribute_const dc_str23stbool_ex(const char* str, tristate_bool_t* res, con
         return -3;
     }
 
-    if (!strcasecmp(str, "on") || !strcasecmp(str, "true")) {
+    if (!strcasecmp(str, "on") || !strcasecmp(str, "true") || !strcasecmp(str, "yes")) {
         *res = TRIBOOL_TRUE;
         return 0;
-    } else if (!strcasecmp(str, "off") || !strcasecmp(str, "false")) {
+    } else if (!strcasecmp(str, "off") || !strcasecmp(str, "false") || !strcasecmp(str, "no")) {
         *res = TRIBOOL_FALSE;
         return 0;
     } else if (!strcasecmp(str, none_val)) {
@@ -63,7 +63,7 @@ int attribute_const dc_str23stbool_ex(const char* str, tristate_bool_t* res, con
     }
 }
 
-static unsigned int attribute_const int23statebool(int v)
+static unsigned int int23statebool(int v)
 {
     if (!v) {
         return 1;
@@ -72,7 +72,7 @@ static unsigned int attribute_const int23statebool(int v)
     }
 }
 
-const char* attribute_const dc_3stbool2str(int v)
+const char* dc_3stbool2str(int v)
 {
     static const char* const strs[] = {"off", "none", "on"};
 
@@ -80,7 +80,7 @@ const char* attribute_const dc_3stbool2str(int v)
     return enum2str_def(b, strs, ARRAY_LEN(strs), "none");
 }
 
-const char* attribute_const dc_3stbool2str_ex(int v, const char* none_val)
+const char* dc_3stbool2str_ex(int v, const char* none_val)
 {
     const char* const strs[] = {"off", S_OR(none_val, "none"), "on"};
 
@@ -88,7 +88,7 @@ const char* attribute_const dc_3stbool2str_ex(int v, const char* none_val)
     return enum2str_def(b, strs, ARRAY_LEN(strs), S_OR(none_val, "none"));
 }
 
-const char* attribute_const dc_3stbool2str_capitalized(int v)
+const char* dc_3stbool2str_capitalized(int v)
 {
     static const char* const strs[] = {"Off", "None", "On"};
 
@@ -114,7 +114,7 @@ static unsigned int parse_on_off(const char* const name, const char* const value
 
 static const char* const msgstor_strs[] = {"AUTO", "SM", "ME", "MT", "SR"};
 
-message_storage_t attribute_const dc_str2msgstor(const char* stor)
+message_storage_t dc_str2msgstor(const char* stor)
 {
     const int res = str2enum(stor, msgstor_strs, ARRAY_LEN(msgstor_strs));
     if (res < 0) {
@@ -123,7 +123,7 @@ message_storage_t attribute_const dc_str2msgstor(const char* stor)
     return (message_storage_t)res;
 }
 
-const char* attribute_const dc_msgstor2str(message_storage_t stor) { return enum2str_def(stor, msgstor_strs, ARRAY_LEN(msgstor_strs), "AUTO"); }
+const char* dc_msgstor2str(message_storage_t stor) { return enum2str_def(stor, msgstor_strs, ARRAY_LEN(msgstor_strs), "AUTO"); }
 
 #/* assume config is zerofill */
 
@@ -135,20 +135,8 @@ static int dc_uconfig_fill(struct ast_config* cfg, const char* cat, struct dc_uc
     const char* const audio_tty  = ast_variable_retrieve(cfg, cat, "audio");
     const char* const data_tty   = ast_variable_retrieve(cfg, cat, "data");
     const char* const alsadev    = ast_variable_retrieve(cfg, cat, "alsadev");
-    const char* imei             = ast_variable_retrieve(cfg, cat, "imei");
-    const char* imsi             = ast_variable_retrieve(cfg, cat, "imsi");
     const char* const uac_str    = ast_variable_retrieve(cfg, cat, "uac");
     const char* const slin16_str = ast_variable_retrieve(cfg, cat, "slin16");
-
-    if (imei && strlen(imei) != IMEI_SIZE) {
-        ast_log(LOG_WARNING, "[%s] Ignore invalid IMEI value '%s'\n", cat, imei);
-        imei = NULL;
-    }
-
-    if (imsi && strlen(imsi) != IMSI_SIZE) {
-        ast_log(LOG_WARNING, "[%s] Ignore invalid IMSI value '%s'\n", cat, imsi);
-        imsi = NULL;
-    }
 
     if (uac_str) {
         if (dc_str23stbool_ex(uac_str, &uac, "ext")) {
@@ -161,7 +149,7 @@ static int dc_uconfig_fill(struct ast_config* cfg, const char* cat, struct dc_uc
         slin16 = parse_on_off("slin16", slin16_str, 0u);
     }
 
-    if (!data_tty && !imei && !imsi) {
+    if (!data_tty) {
         ast_log(LOG_ERROR, "Skipping device %s. Missing required data_tty setting\n", cat);
         return 1;
     }
@@ -169,8 +157,6 @@ static int dc_uconfig_fill(struct ast_config* cfg, const char* cat, struct dc_uc
     ast_copy_string(config->id, cat, sizeof(config->id));
     ast_copy_string(config->data_tty, S_OR(data_tty, ""), sizeof(config->data_tty));
     ast_copy_string(config->audio_tty, S_OR(audio_tty, ""), sizeof(config->audio_tty));
-    ast_copy_string(config->imei, S_OR(imei, ""), sizeof(config->imei));
-    ast_copy_string(config->imsi, S_OR(imsi, ""), sizeof(config->imsi));
     config->uac = uac;
     switch (uac) {
         case TRIBOOL_FALSE:
@@ -201,10 +187,10 @@ void dc_sconfig_fill_defaults(struct dc_sconfig* config)
     ast_copy_string(config->exten, "", sizeof(config->exten));
     ast_copy_string(config->language, DEFAULT_LANGUAGE, sizeof(config->language));
 
-    config->resetquectel  = 1;
-    config->callingpres   = -1;
-    config->initstate     = DEV_STATE_STARTED;
-    config->callwaiting   = CALL_WAITING_AUTO;
+    config->reset_modem   = 1;
+    config->calling_pres  = -1;
+    config->init_state    = DEV_STATE_STARTED;
+    config->call_waiting  = CALL_WAITING_AUTO;
     config->moh           = 1;
     config->rxgain        = -1;
     config->txgain        = -1;
@@ -238,33 +224,33 @@ void dc_sconfig_fill(struct ast_config* cfg, const char* cat, struct dc_sconfig*
                 config->txgain = -1;
             }
         } else if (!strcasecmp(v->name, "callingpres")) {
-            config->callingpres = ast_parse_caller_presentation(v->value);
-            if (config->callingpres == -1) {
-                errno               = 0;
-                config->callingpres = (int)strtol(v->value, (char**)NULL, 10); /* callingpres is set to -1 if invalid */
-                if (!config->callingpres && errno == EINVAL) {
-                    config->callingpres = -1;
+            config->calling_pres = ast_parse_caller_presentation(v->value);
+            if (config->calling_pres == -1) {
+                errno                = 0;
+                config->calling_pres = (int)strtol(v->value, (char**)NULL, 10); /* callingpres is set to -1 if invalid */
+                if (!config->calling_pres && errno == EINVAL) {
+                    config->calling_pres = -1;
                 }
             }
         } else if (!strcasecmp(v->name, "usecallingpres")) {
-            config->usecallingpres = parse_on_off(v->name, v->value, 0u); /* usecallingpres is set to 0 if invalid */
+            config->use_calling_pres = parse_on_off(v->name, v->value, 0u); /* usecallingpres is set to 0 if invalid */
         } else if (!strcasecmp(v->name, "autodeletesms")) {
-            config->autodeletesms = parse_on_off(v->name, v->value, 0u); /* autodeletesms is set to 0 if invalid */
-        } else if (!strcasecmp(v->name, "resetquectel")) {
-            config->resetquectel = parse_on_off(v->name, v->value, 0u); /* resetquectel is set to 0 if invalid */
+            config->sms_autodelete = parse_on_off(v->name, v->value, 0u); /* autodeletesms is set to 0 if invalid */
+        } else if (!strcasecmp(v->name, "resetmodem")) {
+            config->reset_modem = parse_on_off(v->name, v->value, 0u); /* resetmodem is set to 0 if invalid */
         } else if (!strcasecmp(v->name, "disable")) {
             const unsigned int is = parse_on_off(v->name, v->value, 0u);
-            config->initstate     = is ? DEV_STATE_REMOVED : DEV_STATE_STARTED;
+            config->init_state    = is ? DEV_STATE_REMOVED : DEV_STATE_STARTED;
         } else if (!strcasecmp(v->name, "initstate")) {
             const dev_state_t val = str2dev_state(v->value);
             if (val == DEV_STATE_STOPPED || val == DEV_STATE_STARTED || val == DEV_STATE_REMOVED) {
-                config->initstate = val;
+                config->init_state = val;
             } else {
                 ast_log(LOG_ERROR, "Invalid value for 'initstate': '%s', must be one of 'stop' 'start' 'remove' default is 'start'\n", v->value);
             }
         } else if (!strcasecmp(v->name, "callwaiting")) {
             if (strcasecmp(v->value, "auto")) {
-                config->callwaiting = parse_on_off(v->name, v->value, 0u);
+                config->call_waiting = parse_on_off(v->name, v->value, 0u);
             }
         } else if (!strcasecmp(v->name, "multiparty")) {
             config->multiparty = parse_on_off(v->name, v->value, 0u);
@@ -297,19 +283,19 @@ void dc_sconfig_fill(struct ast_config* cfg, const char* cat, struct dc_sconfig*
 
 void dc_gconfig_fill(struct ast_config* cfg, const char* cat, struct dc_gconfig* config)
 {
-    config->discovery_interval = DEFAULT_DISCOVERY_INT;
+    config->manager_interval = DEFAULT_MANAGER_INTERVAL;
     ast_copy_string(config->sms_db, DEFAULT_SMS_DB, sizeof(config->sms_db));
     ast_copy_string(config->sms_backup_db, DEFAULT_SMS_BACKUP_DB, sizeof(config->sms_backup_db));
-    config->csms_ttl = DEFAULT_CSMS_TTL;
+    config->sms_ttl = DEFAULT_SMS_TTL;
 
     const char* const stmp = ast_variable_retrieve(cfg, cat, "interval");
     if (stmp) {
         errno         = 0;
         const int tmp = (int)strtol(stmp, (char**)NULL, 10);
         if (!tmp && errno == EINVAL) {
-            ast_log(LOG_NOTICE, "Error parsing 'interval' in general section, using default value %d\n", config->discovery_interval);
+            ast_log(LOG_NOTICE, "Error parsing 'interval' in general section, using default value %d\n", config->manager_interval);
         } else {
-            config->discovery_interval = tmp;
+            config->manager_interval = tmp;
         }
     }
 
@@ -323,14 +309,14 @@ void dc_gconfig_fill(struct ast_config* cfg, const char* cat, struct dc_gconfig*
         ast_copy_string(config->sms_backup_db, smsdb_backup, sizeof(config->sms_backup_db));
     }
 
-    const char* const csmsttl = ast_variable_retrieve(cfg, cat, "csmsttl");
-    if (csmsttl) {
+    const char* const smsttl = ast_variable_retrieve(cfg, cat, "smsttl");
+    if (smsttl) {
         errno          = 0;
-        const long tmp = strtol(csmsttl, (char**)NULL, 10);
+        const long tmp = strtol(smsttl, (char**)NULL, 10);
         if (!tmp && errno == EINVAL) {
-            ast_log(LOG_NOTICE, "Error parsing 'csmsttl' in general section, using default value %d\n", config->csms_ttl);
+            ast_log(LOG_NOTICE, "Error parsing 'smsttl' in general section, using default value %d\n", config->sms_ttl);
         } else {
-            config->csms_ttl = tmp;
+            config->sms_ttl = tmp;
         }
     }
 }
@@ -343,11 +329,36 @@ int dc_config_fill(struct ast_config* cfg, const char* cat, const struct dc_scon
     int err = dc_uconfig_fill(cfg, cat, &config->unique);
     if (!err) {
         /* inherit from parent */
-        memcpy(&config->shared, parent, sizeof(config->shared));
+        config->shared = *parent;
 
         /* overwrite local */
         dc_sconfig_fill(cfg, cat, &config->shared);
     }
 
     return err;
+}
+
+static int dc_sconfig_compare(const struct dc_sconfig* const cfg1, const struct dc_sconfig* const cfg2)
+{
+    return strcmp(cfg1->context, cfg2->context) || strcmp(cfg1->exten, cfg2->exten) || strcmp(cfg1->language, cfg2->language) || cfg1->group != cfg2->group ||
+           cfg1->rxgain != cfg2->rxgain || cfg1->txgain != cfg2->txgain || cfg1->calling_pres != cfg2->calling_pres ||
+           cfg1->use_calling_pres != cfg2->use_calling_pres || cfg1->sms_autodelete != cfg2->sms_autodelete || cfg1->reset_modem != cfg2->reset_modem ||
+           cfg1->multiparty != cfg2->multiparty || cfg1->dtmf != cfg2->dtmf || cfg1->moh != cfg2->moh || cfg1->query_time != cfg2->query_time ||
+           cfg1->dsci != cfg2->dsci || cfg1->qhup != cfg2->qhup || cfg1->dtmf_duration != cfg2->dtmf_duration || cfg1->init_state != cfg2->init_state ||
+           cfg1->call_waiting != cfg2->call_waiting || cfg1->msg_service != cfg2->msg_service || cfg1->msg_direct != cfg2->msg_direct ||
+           cfg1->msg_storage != cfg2->msg_storage;
+}
+
+static int dc_uconfig_compare(const struct dc_uconfig* const cfg1, const struct dc_uconfig* const cfg2)
+{
+    return strcmp(cfg1->id, cfg2->id) || strcmp(cfg1->audio_tty, cfg2->audio_tty) || strcmp(cfg1->data_tty, cfg2->data_tty) ||
+           strcmp(cfg1->alsadev, cfg2->alsadev) || cfg1->uac != cfg2->uac || cfg1->slin16 != cfg2->slin16;
+}
+
+int pvt_config_compare(const struct pvt_config* const cfg1, const struct pvt_config* const cfg2)
+{
+    if (!(cfg1 && cfg2)) {
+        return -1;
+    }
+    return dc_sconfig_compare(&cfg1->shared, &cfg2->shared) || dc_uconfig_compare(&cfg1->unique, &cfg2->unique);
 }

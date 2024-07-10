@@ -17,17 +17,17 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
 
-static inline const char* attribute_const enum2str_def(const unsigned value, const char* const names[], const unsigned items, const char* const def)
+static inline const char* enum2str_def(const unsigned value, const char* const names[], const unsigned items, const char* const def)
 {
     return S_COR(value < items, names[value], def);
 }
 
-static inline const char* attribute_const enum2str(const unsigned value, const char* const names[], const unsigned items)
+static inline const char* enum2str(const unsigned value, const char* const names[], const unsigned items)
 {
     return enum2str_def(value, names, items, "unknown");
 }
 
-static inline int attribute_const str2enum(const char* const value, const char* const options[], const unsigned items)
+static inline int str2enum(const char* const value, const char* const options[], const unsigned items)
 {
     for (unsigned i = 0; i < items; ++i) {
         if (!strcasecmp(value, options[i])) {

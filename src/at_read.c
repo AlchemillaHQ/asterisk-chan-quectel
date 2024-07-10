@@ -107,9 +107,9 @@ void at_clean_data(const char* dev, int fd, struct ringbuffer* const rb)
     }
 }
 
-size_t attribute_const at_get_iov_size(const struct iovec* iov) { return iov[0].iov_len + iov[1].iov_len; }
+size_t at_get_iov_size(const struct iovec* iov) { return iov[0].iov_len + iov[1].iov_len; }
 
-size_t attribute_const at_get_iov_size_n(const struct iovec* iov, int iovcnt)
+size_t at_get_iov_size_n(const struct iovec* iov, int iovcnt)
 {
     size_t res = 0u;
     for (int i = 0; i < iovcnt; ++i) {
@@ -162,10 +162,6 @@ static size_t get_2ndeol_pos(const struct ringbuffer* const rb, struct iovec* io
 
 int at_read_result_iov(const char* dev, int* read_result, size_t* skip, struct ringbuffer* rb, struct iovec* iov, struct ast_str* buf)
 {
-    static const char M_CSSI[]       = "+CSSI:";
-    static const char M_CSSU[]       = "\r\n+CSSU:";
-    static const char M_CMS_ERROR[]  = "\r\n+CMS ERROR:";
-    static const char M_CMGS[]       = "\r\n+CMGS:";
     static const char M_CMGR[]       = "+CMGR:";
     static const char M_CNUM[]       = "+CNUM:";
     static const char M_ERROR_CNUM[] = "ERROR+CNUM:";
@@ -216,17 +212,7 @@ int at_read_result_iov(const char* dev, int* read_result, size_t* skip, struct r
 
             return 0;
         } else {
-            if (!rb_memcmp(rb, M_CSSI, STRLEN(M_CSSI))) {
-                const int iovcnt = rb_read_n_iov(rb, iov, STRLEN(M_CSSI));
-                if (iovcnt) {
-                    *read_result = 0;
-                }
-
-                return iovcnt;
-            } else if (!(rb_memcmp(rb, M_CSSU, STRLEN(M_CSSU)) && rb_memcmp(rb, M_CMS_ERROR, STRLEN(M_CMS_ERROR)) && rb_memcmp(rb, M_CMGS, STRLEN(M_CMGS)))) {
-                rb_read_upd(rb, 2);
-                return at_read_result_iov(dev, read_result, skip, rb, iov, buf);
-            } else if (!rb_memcmp(rb, M_SMS_PROMPT, STRLEN(M_SMS_PROMPT))) {
+            if (!rb_memcmp(rb, M_SMS_PROMPT, STRLEN(M_SMS_PROMPT))) {
                 *read_result = 0;
                 return rb_read_n_iov(rb, iov, STRLEN(M_SMS_PROMPT));
             } else if (!(rb_memcmp(rb, M_CMGR, STRLEN(M_CMGR)) && rb_memcmp(rb, M_CNUM, STRLEN(M_CNUM)) && rb_memcmp(rb, M_ERROR_CNUM, STRLEN(M_ERROR_CNUM)))) {

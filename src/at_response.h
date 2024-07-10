@@ -36,7 +36,7 @@ struct iovec;
     /* and "ERROR+CNUM:", hacked later on */           \
                                                        \
     _(DSCI, "^DSCI", "^DSCI:")                         \
-    _(CEND, "^CEND", "VOICE CALL:")                    \
+    _(VOICE_CALL, "VOICE CALL", "VOICE CALL:")         \
     _(CPIN, "+CPIN", "+CPIN:")                         \
                                                        \
     _(CREG, "+CREG", "+CREG:")                         \
@@ -56,7 +56,7 @@ struct iovec;
     _(NO_DIALTONE, "NO DIALTONE", "NO DIALTONE\r")     \
     _(NO_ANSWER, "NO ANSWER", "NO ANSWER\r")           \
     _(OK, "OK", "OK\r")                                \
-    _(CONF, "^CONF", "MISSED_CALL:")                   \
+    _(MISSED_CALL, "MISSED CALL", "MISSED_CALL:")      \
     _(RING, "RING", "RING\r")                          \
                                                        \
     _(SMMEMFULL, "^SMMEMFULL", "^SMMEMFULL:")          \

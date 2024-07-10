@@ -54,8 +54,7 @@ static void handle_expired_reports(struct pvt* pvt)
 
     int uid;
 
-    const ssize_t res = smsdb_outgoing_purge_one(&uid, &dst, &msg);
-    if (res < 0) {
+    if (smsdb_outgoing_purge_one(&uid, &dst, &msg)) {
         return;
     }
 
@@ -99,8 +98,8 @@ static int cmd_timeout_taskproc(void* tpdata) { return PVT_TASKPROC_TRYLOCK_AND_
 
 static int reopen_audio_port(struct pvt* pvt)
 {
-    tty_close_lck(PVT_STATE(pvt, audio_tty), pvt->audio_fd, 0, 0);
-    pvt->audio_fd = tty_open(PVT_STATE(pvt, audio_tty), pvt->is_simcom);
+    tty_close_lck(CONF_UNIQ(pvt, audio_tty), pvt->audio_fd, 0, 0);
+    pvt->audio_fd = tty_open(CONF_UNIQ(pvt, audio_tty), pvt->is_simcom);
 
     if (!PVT_NO_CHANS(pvt)) {
         struct cpvt* cpvt;
@@ -112,7 +111,25 @@ static int reopen_audio_port(struct pvt* pvt)
     return (pvt->audio_fd > 0);
 }
 
-static int check_dev_status(struct pvt* const pvt)
+static void pcm_show_playback_state(struct pvt* const pvt) { pcm_show_state(4, "PLAYBACK", PVT_ID(pvt), pvt->ocard); }
+
+static void pcm_show_capture_state(struct pvt* const pvt) { pcm_show_state(4, "CAPTURE", PVT_ID(pvt), pvt->icard); }
+
+static int pcm_show_playback_state_taskproc(void* tpdata) { return PVT_TASKPROC_TRYLOCK_AND_EXECUTE(tpdata, pcm_show_playback_state); }
+
+static int pcm_show_capture_state_taskproc(void* tpdata) { return PVT_TASKPROC_TRYLOCK_AND_EXECUTE(tpdata, pcm_show_capture_state); }
+
+static void push_pcm_state_taskprocs(struct ast_taskprocessor* tps, struct pvt* const pvt)
+{
+    if (ast_taskprocessor_push(tps, pcm_show_playback_state_taskproc, pvt)) {
+        ast_debug(5, "[%s] Unable to show ALSA playback state\n", PVT_ID(pvt));
+    }
+    if (ast_taskprocessor_push(tps, pcm_show_capture_state_taskproc, pvt)) {
+        ast_debug(5, "[%s] Unable to show ALSA capture state\n", PVT_ID(pvt));
+    }
+}
+
+static int check_dev_status(struct pvt* const pvt, struct ast_taskprocessor* tps)
 {
     int err;
     if (tty_status(pvt->data_fd, &err)) {
@@ -133,13 +150,12 @@ static int check_dev_status(struct pvt* const pvt)
             break;
 
         case TRIBOOL_TRUE:
-            pcm_show_state(2, "PLAYBACK", PVT_ID(pvt), pvt->ocard);
-            pcm_show_state(2, "CAPTURE", PVT_ID(pvt), pvt->icard);
+            push_pcm_state_taskprocs(tps, pvt);
             break;
 
         case TRIBOOL_NONE:
-            pcm_show_state(2, "PLAYBACK", PVT_ID(pvt), pvt->ocard);
-            pcm_show_state(2, "CAPTURE", PVT_ID(pvt), pvt->icard);
+            push_pcm_state_taskprocs(tps, pvt);
+
             if (pcm_status(pvt->ocard, pvt->icard)) {
                 ast_log(LOG_ERROR, "[%s][AUDIO][ALSA] Lost connection\n", PVT_ID(pvt));
                 return -1;
@@ -198,7 +214,7 @@ static void monitor_threadproc_pvt(struct pvt* const pvt)
                 continue;
             }
         } else {  // pvt locked
-            if (check_dev_status(pvt)) {
+            if (check_dev_status(pvt, tps)) {
                 goto e_cleanup;
             }
 

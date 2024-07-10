@@ -30,6 +30,7 @@
 
 #include "at_command.h"
 #include "at_queue.h" /* write_all() TODO: move out */
+#include "at_read.h"
 #include "chan_quectel.h"
 #include "helpers.h" /* get_at_clir_value()  */
 
@@ -183,7 +184,7 @@ static struct ast_channel* channel_request(attribute_unused const char* type, st
     return channel;
 }
 
-static int attribute_const get_at_clir_value(const int clir)
+static int get_at_clir_value(const int clir)
 {
     int res = 0;
 
@@ -252,11 +253,11 @@ static int channel_call(struct ast_channel* channel, const char* dest, attribute
 
     int clir = 0;
 
-    if (CONF_SHARED(pvt, usecallingpres)) {
-        if (CONF_SHARED(pvt, callingpres) < 0) {
+    if (CONF_SHARED(pvt, use_calling_pres)) {
+        if (CONF_SHARED(pvt, calling_pres) < 0) {
             clir = ast_channel_connected(channel)->id.number.presentation;
         } else {
-            clir = CONF_SHARED(pvt, callingpres);
+            clir = CONF_SHARED(pvt, calling_pres);
         }
 
         ast_debug(4, "[%s] Caller presentation: %s [%d]\n", PVT_ID(pvt), ast_describe_caller_presentation(clir), clir);
@@ -369,21 +370,11 @@ static int channel_digit_begin(struct ast_channel* channel, char digit)
 
 static int channel_digit_end(attribute_unused struct ast_channel* channel, attribute_unused char digit, attribute_unused unsigned int duration) { return 0; }
 
-static ssize_t attribute_const get_iov_total_len(const struct iovec* const iov, int iovcnt)
-{
-    ssize_t len = 0;
-
-    for (int i = 0; i < iovcnt; ++i) {
-        len += iov[i].iov_len;
-    }
-    return len;
-}
-
 #/* ARCH: move to cpvt level */
 
 static ssize_t iov_write(struct pvt* pvt, int fd, const struct iovec* const iov, int iovcnt)
 {
-    const ssize_t len = get_iov_total_len(iov, iovcnt);
+    const ssize_t len = (ssize_t)at_get_iov_size_n(iov, iovcnt);
     const ssize_t w   = writev(fd, iov, iovcnt);
 
     if (w < 0) {
@@ -475,33 +466,9 @@ static void write_conference(struct pvt* pvt, const char* const buffer, size_t l
     }
 }
 
-static struct ast_frame* prepare_voice_frame(struct cpvt* const cpvt, void* const buf, int samples, const struct ast_format* const fmt)
-{
-    struct ast_frame* const f = &cpvt->read_frame;
-
-    memset(f, 0, sizeof(struct ast_frame));
-
-    f->frametype       = AST_FRAME_VOICE;
-    f->subclass.format = (struct ast_format*)fmt;
-    f->samples         = samples;
-    f->datalen         = samples * sizeof(short);
-    f->data.ptr        = buf;
-    f->offset          = AST_FRIENDLY_OFFSET;
-    f->src             = AST_MODULE;
-
-    ast_frame_byteswap_le(f);
-
-    return f;
-}
-
-static struct ast_frame* prepare_silence_voice_frame(struct cpvt* const cpvt, int samples, const struct ast_format* const fmt)
-{
-    return prepare_voice_frame(cpvt, pvt_get_silence_buffer(cpvt->pvt), samples, fmt);
-}
-
 static struct ast_frame* channel_read_tty(struct cpvt* cpvt, struct pvt* pvt, size_t frame_size, const struct ast_format* const fmt)
 {
-    char* const buf = cpvt->read_buf + AST_FRIENDLY_OFFSET;
+    void* const buf = cpvt_get_buffer(cpvt);
     const int fd    = CPVT_IS_MASTER(cpvt) ? pvt->audio_fd : cpvt->rd_pipe[PIPE_READ];
 
     if (fd < 0) {
@@ -533,8 +500,7 @@ static struct ast_frame* channel_read_tty(struct cpvt* cpvt, struct pvt* pvt, si
         }
     }
 
-    struct ast_frame* const f = prepare_voice_frame(cpvt, buf, res / 2, fmt);
-    return f;
+    return cpvt_prepare_voice_frame(cpvt, buf, res / 2, fmt);
 }
 
 static struct ast_frame* channel_read_uac(struct cpvt* cpvt, struct pvt* pvt, size_t frames, const struct ast_format* const fmt)
@@ -568,7 +534,16 @@ static struct ast_frame* channel_read_uac(struct cpvt* cpvt, struct pvt* pvt, si
             return NULL;
     }
 
-    char* const buf = cpvt->read_buf + AST_FRIENDLY_OFFSET;
+    const snd_pcm_sframes_t avail_frames = snd_pcm_avail_update(pvt->icard);
+    if (avail_frames < 0) {
+        ast_log(LOG_ERROR, "[%s][ALSA][CAPTURE] Cannot determine available samples: %s\n", PVT_ID(pvt), snd_strerror((int)avail_frames));
+        return NULL;
+    } else if (frames > (size_t)avail_frames) {
+        ast_log(LOG_WARNING, "[%s][ALSA][CAPTURE] Not enough samples: %d/%d\n", PVT_ID(pvt), (int)avail_frames, (int)frames);
+        return NULL;
+    }
+
+    void* const buf = cpvt_get_buffer(cpvt);
     const int res   = snd_pcm_mmap_readi(pvt->icard, buf, frames);
 
     switch (res) {
@@ -587,7 +562,7 @@ static struct ast_frame* channel_read_uac(struct cpvt* cpvt, struct pvt* pvt, si
                         write_conference(pvt, buf, res);
                     }
 
-                    PVT_STAT(pvt, a_read_bytes) += res * sizeof(short);
+                    PVT_STAT(pvt, a_read_bytes) += res * sizeof(int16_t);
                     PVT_STAT(pvt, read_frames)++;
                     if (res < frames) {
                         PVT_STAT(pvt, read_sframes)++;
@@ -598,7 +573,7 @@ static struct ast_frame* channel_read_uac(struct cpvt* cpvt, struct pvt* pvt, si
                     ast_log(LOG_WARNING, "[%s][ALSA][CAPTURE] Short frame: %d/%d\n", PVT_ID(pvt), res, (int)frames);
                 }
 
-                return prepare_voice_frame(cpvt, buf, res, fmt);
+                return cpvt_prepare_voice_frame(cpvt, buf, res, fmt);
             } else if (res < 0) {
                 ast_log(LOG_ERROR, "[%s][ALSA][CAPTURE] Read error: %s\n", PVT_ID(pvt), snd_strerror(res));
             }
@@ -648,7 +623,7 @@ static struct ast_frame* channel_read(struct ast_channel* channel)
     }
 
     if (CONF_UNIQ(pvt, uac) > TRIBOOL_FALSE && CPVT_IS_MASTER(cpvt)) {
-        f = channel_read_uac(cpvt, pvt, frame_size / sizeof(short), fmt);
+        f = channel_read_uac(cpvt, pvt, frame_size / sizeof(int16_t), fmt);
     } else {
         f = channel_read_tty(cpvt, pvt, frame_size, fmt);
     }
@@ -658,7 +633,7 @@ f_ret:
         const int fd = ast_channel_fd(channel, 0);
         ast_debug(5, "[%s] Read - idx:%d state:%s audio:%d:%d - returning SILENCE frame\n", PVT_ID(pvt), cpvt->call_idx, call_state2str(cpvt->state), fd,
                   pvt->audio_fd);
-        return prepare_silence_voice_frame(cpvt, frame_size / sizeof(short), fmt);
+        return cpvt_prepare_silence_voice_frame(cpvt, frame_size / sizeof(int16_t), fmt);
     } else {
         ast_debug(8, "[%s] Read - idx:%d state:%s samples:%d\n", PVT_ID(pvt), cpvt->call_idx, call_state2str(cpvt->state), f->samples);
         return f;
@@ -726,14 +701,17 @@ static int channel_write_tty(struct ast_channel* channel, struct ast_frame* f, s
            cpvt->used, pvt->a_write_rb.write, pvt->a_write_rb.used);
         */
     } else if (CPVT_IS_ACTIVE(cpvt)) {  // direct write
-        struct iovec iov;
-
         ast_frame_byteswap_le(f);
-        iov.iov_base = f->data.ptr;
-        iov.iov_len  = f->datalen;
 
-        if (iov_write(pvt, pvt->audio_fd, &iov, 1) >= 0) {
-            PVT_STAT(pvt, write_frames)++;
+        struct iovec const iov = {.iov_base = f->data.ptr, .iov_len = f->datalen};
+        const ssize_t res      = iov_write(pvt, pvt->audio_fd, &iov, 1);
+
+        if (res >= 0) {
+            PVT_STAT(pvt, write_frames)  += 1;
+            PVT_STAT(pvt, a_write_bytes) += res;
+            if (res != f->datalen) {
+                PVT_STAT(pvt, write_tframes)++;
+            }
         }
     }
 
@@ -799,12 +777,11 @@ static int channel_write_uac(struct ast_channel* attribute_unused(channel), stru
 
         default:
             if (res >= 0) {
+                PVT_STAT(pvt, write_frames)  += 1;
+                PVT_STAT(pvt, a_write_bytes) += res * sizeof(int16_t);
                 if (res != samples) {
-                    PVT_STAT(pvt, write_frames)++;
-                    PVT_STAT(pvt, write_sframes)++;
+                    PVT_STAT(pvt, write_tframes)++;
                     ast_log(LOG_WARNING, "[%s][ALSA][PLAYBACK] Write: %d/%d\n", PVT_ID(pvt), res, samples);
-                } else {
-                    PVT_STAT(pvt, write_frames)++;
                 }
             }
             break;
@@ -996,7 +973,7 @@ static void set_channel_vars(struct pvt* pvt, struct ast_channel* channel)
 }
 
 /* NOTE: called from device and current levels with locked pvt */
-struct ast_channel* channel_new(struct pvt* pvt, int ast_state, const char* cid_num, int call_idx, unsigned dir, call_state_t state, const char* dnid,
+struct ast_channel* channel_new(struct pvt* pvt, int ast_state, const char* cid_num, int call_idx, unsigned dir, int state, const char* dnid,
                                 const struct ast_assigned_ids* assignedids, attribute_unused const struct ast_channel* requestor, unsigned local_channel)
 {
     struct cpvt* const cpvt = cpvt_alloc(pvt, call_idx, dir, CALL_STATE_INIT, local_channel);
@@ -1052,7 +1029,7 @@ struct ast_channel* channel_new(struct pvt* pvt, int ast_state, const char* cid_
     }
 
     if (state != CALL_STATE_INIT) {
-        cpvt_change_state(cpvt, state, AST_CAUSE_NORMAL_UNSPECIFIED);
+        cpvt_change_state(cpvt, (call_state_t)state, AST_CAUSE_NORMAL_UNSPECIFIED);
     }
 
     ast_module_ref(self_module());
@@ -1080,9 +1057,11 @@ int channel_enqueue_hangup(struct ast_channel* channel, int hangupcause)
     return ast_queue_hangup(channel);
 }
 
-void channel_start_local_report(struct pvt* pvt, const char* subject, local_report_direction direction, const char* number, const char* ts, const char* dt,
-                                int success, struct ast_json* const report)
+void channel_start_local_report(struct pvt* pvt, const char* subject, local_report_direction direction, const char* number, const struct ast_tm* ts,
+                                const struct ast_tm* dt, int success, struct ast_json* const report)
 {
+    static const size_t AST_TM_MAX_LEN = 64;
+
     RAII_VAR(struct ast_json*, rprt, ast_json_object_create(), ast_json_unref);
     ast_json_object_set(rprt, "subject", ast_json_string_create(subject));
     switch (direction) {
@@ -1098,12 +1077,16 @@ void channel_start_local_report(struct pvt* pvt, const char* subject, local_repo
             break;
     }
 
-    if (!ast_strlen_zero(ts)) {
-        ast_json_object_set(rprt, "ts", ast_json_string_create(ts));
+    if (ts && ts->tm_year) {
+        struct ast_str* buf = ast_str_alloca(AST_TM_MAX_LEN);
+        format_ast_tm(ts, buf);
+        ast_json_object_set(rprt, "ts", ast_json_string_create(ast_str_buffer(buf)));
     }
 
-    if (!ast_strlen_zero(dt)) {
-        ast_json_object_set(rprt, "dt", ast_json_string_create(dt));
+    if (dt && dt->tm_year) {
+        struct ast_str* buf = ast_str_alloca(AST_TM_MAX_LEN);
+        format_ast_tm(dt, buf);
+        ast_json_object_set(rprt, "dt", ast_json_string_create(ast_str_buffer(buf)));
     }
 
     // ast_json_object_set(rprt, "success", ast_json_boolean(success));

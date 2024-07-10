@@ -6,7 +6,7 @@
 
 #include <sys/types.h> /* size_t */
 
-#include "char_conv.h" /* str_encoding_t */
+#include <asterisk/localtime.h> /* struct ast_tm */
 
 /* Message Type Indicator Parameter */
 #define PDUTYPE_MTI_SHIFT 0
@@ -41,7 +41,7 @@ ssize_t pdu_build(uint8_t* buffer, size_t length, size_t* tpdulen, const char* s
                   unsigned msg_bytes, unsigned valid_minutes, int srr, const pdu_udh_t* udh);
 int pdu_parse_sca(uint8_t* pdu, size_t pdu_length, char* sca, size_t sca_len);
 int tpdu_parse_type(uint8_t* pdu, size_t pdu_length, int* type);
-int tpdu_parse_status_report(uint8_t* pdu, size_t pdu_length, int* mr, char* ra, size_t ra_len, char* scts, char* dt, int* st);
-int tpdu_parse_deliver(uint8_t* pdu, size_t pdu_length, int tpdu_type, char* oa, size_t oa_len, char* scts, uint16_t* msg, pdu_udh_t* udh);
+int tpdu_parse_status_report(uint8_t* pdu, size_t pdu_length, int* mr, char* ra, size_t ra_len, struct ast_tm* scts, struct ast_tm* dt, int* st);
+int tpdu_parse_deliver(uint8_t* pdu, size_t pdu_length, int tpdu_type, char* oa, size_t oa_len, struct ast_tm* scts, uint16_t* msg, pdu_udh_t* udh);
 
 #endif /* CHAN_QUECTEL_PDU_H_INCLUDED */

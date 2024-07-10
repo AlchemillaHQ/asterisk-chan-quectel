@@ -12,8 +12,6 @@
 
 #define CONFIG_FILE "quectel.conf"
 #define DEVNAMELEN 31
-#define IMEI_SIZE 15
-#define IMSI_SIZE 15
 #define PATHLEN 256
 #define DEVPATHLEN 256
 
@@ -36,34 +34,17 @@ typedef enum {
     MESSAGE_STORAGE_SR,
 } message_storage_t;
 
-const char* attribute_const dc_cw_setting2str(call_waiting_t);
+const char* dc_cw_setting2str(call_waiting_t);
 
-tristate_bool_t attribute_const dc_str23stbool(const char*);
-int attribute_const dc_str23stbool_ex(const char*, tristate_bool_t*, const char*);
+tristate_bool_t dc_str23stbool(const char*);
+int dc_str23stbool_ex(const char*, tristate_bool_t*, const char*);
 
-const char* attribute_const dc_3stbool2str(int);
-const char* attribute_const dc_3stbool2str_ex(int, const char*);
-const char* attribute_const dc_3stbool2str_capitalized(int);
+const char* dc_3stbool2str(int);
+const char* dc_3stbool2str_ex(int, const char*);
+const char* dc_3stbool2str_capitalized(int);
 
-message_storage_t attribute_const dc_str2msgstor(const char*);
-const char* attribute_const dc_msgstor2str(message_storage_t);
-
-/*
- Config API
- Operations
-    convert from string to native
-    convent from native to string
-    get native value
-    get alternative presentation
-
-    set native value ?
-
-    types:
-        string of limited length
-        integer with limits
-        enum
-        boolean
-*/
+message_storage_t dc_str2msgstor(const char*);
+const char* dc_msgstor2str(message_storage_t);
 
 /* Global inherited (shared) settings */
 typedef struct dc_sconfig {
@@ -71,24 +52,24 @@ typedef struct dc_sconfig {
     char exten[AST_MAX_EXTENSION]; /*!< exten, not overwrite valid subscriber_number */
     char language[MAX_LANGUAGE];   /*!< default language 'en' */
 
-    int group;       /*!< group number for group dialling 0 */
-    int rxgain;      /*!< increase the incoming volume 0 */
-    int txgain;      /*!< increase the outgoint volume 0 */
-    int callingpres; /*!< calling presentation */
+    int group;        /*!< group number for group dialling 0 */
+    int rxgain;       /*!< increase the incoming volume 0 */
+    int txgain;       /*!< increase the outgoint volume 0 */
+    int calling_pres; /*!< calling presentation */
 
-    unsigned int usecallingpres:1; /*! -1 */
-    unsigned int autodeletesms :1; /*! 0 */
-    unsigned int resetquectel  :1; /*! 1 */
-    unsigned int multiparty    :1; /*! 0 */
-    unsigned int dtmf          :1; /*! 0 */
-    unsigned int moh           :1; /*! 0 */
-    unsigned int query_time    :1; /*! 0 */
-    unsigned int dsci          :1; /*!< use ^DSCI call state notifications */
-    unsigned int qhup          :1; /*!< use QHUP command */
+    unsigned int use_calling_pres:1; /*! -1 */
+    unsigned int sms_autodelete  :1; /*! 0 */
+    unsigned int reset_modem     :1; /*! 1 */
+    unsigned int multiparty      :1; /*! 0 */
+    unsigned int dtmf            :1; /*! 0 */
+    unsigned int moh             :1; /*! 0 */
+    unsigned int query_time      :1; /*! 0 */
+    unsigned int dsci            :1; /*!< use ^DSCI call state notifications */
+    unsigned int qhup            :1; /*!< use QHUP command */
 
-    long dtmf_duration;         /*! duration of DTMF in miliseconds */
-    dev_state_t initstate;      /*! DEV_STATE_STARTED */
-    call_waiting_t callwaiting; /*!< enable/disable/auto call waiting CALL_WAITING_AUTO */
+    long dtmf_duration;          /*! duration of DTMF in miliseconds */
+    dev_state_t init_state;      /*! DEV_STATE_STARTED */
+    call_waiting_t call_waiting; /*!< enable/disable/auto call waiting CALL_WAITING_AUTO */
 
     int msg_service;
     tristate_bool_t msg_direct;
@@ -97,10 +78,10 @@ typedef struct dc_sconfig {
 
 /* Global settings */
 typedef struct dc_gconfig {
-    int discovery_interval; /*!< The device discovery interval */
+    int manager_interval; /*!< The device discovery interval */
     char sms_db[PATHLEN];
     char sms_backup_db[PATHLEN];
-    int csms_ttl;
+    int sms_ttl;
 } dc_gconfig_t;
 
 /* Local required (unique) settings */
@@ -109,8 +90,6 @@ typedef struct dc_uconfig {
     char id[DEVNAMELEN];        /*!< id from quectel.conf */
     char audio_tty[DEVPATHLEN]; /*!< tty for audio connection */
     char data_tty[DEVPATHLEN];  /*!< tty for AT commands */
-    char imei[IMEI_SIZE + 1];   /*!< search device by imei */
-    char imsi[IMSI_SIZE + 1];   /*!< search device by imsi */
     char alsadev[DEVNAMELEN];   /*!< ALSA audio device name */
     tristate_bool_t uac;        /*!< handle audio by audio device (UAC) */
     unsigned int slin16:1;      /*!< SLIN16 audio format */
@@ -129,6 +108,6 @@ void dc_sconfig_fill_defaults(struct dc_sconfig* config);
 void dc_sconfig_fill(struct ast_config* cfg, const char* cat, struct dc_sconfig* config);
 void dc_gconfig_fill(struct ast_config* cfg, const char* cat, struct dc_gconfig* config);
 int dc_config_fill(struct ast_config* cfg, const char* cat, const struct dc_sconfig* parent, struct pvt_config* config);
-
+int pvt_config_compare(const struct pvt_config* const cfg1, const struct pvt_config* const cfg2);
 
 #endif /* CHAN_QUECTEL_DC_CONFIG_H_INCLUDED */

@@ -16,26 +16,26 @@ typedef enum { QIND_NONE = 0, QIND_CSQ, QIND_ACT, QIND_CCINFO } qind_t;
 
 typedef enum { CCWA_VARIANT_PRESENTATION_FLAG, CCWA_VARIANT_STATUS_AND_CLASS, CCWA_VARIANT_URC } ccwa_variant_t;
 
-const char* attribute_const at_qind2str(qind_t);
+const char* at_qind2str(qind_t);
 
 char* at_parse_cnum(char* str);
-char* at_parse_cops(char* str);
+int at_parse_cops(char* str, char** oper, int* act);
 int at_parse_qspn(char* str, char** fnn, char** snn, char** spn);
 int at_parse_cspn(char*, char**);
 int at_parse_qnwinfo(char* str, int* act, int* oper, char** band, int* channel);
-int at_parse_creg(char* str, int* gsm_reg, int* gsm_reg_status, char** lac, char** ci, int* act);
+int at_parse_creg(char* str, int cereg, int* gsm_reg_status, char** lac, char** ci, int* act);
 int at_parse_cmti(const char* str, int* idx);
 int at_parse_cdsi(const char* str, int* idx);
-int at_parse_cmgr(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                  size_t* msg_len, pdu_udh_t* udh);
-int at_parse_cmgl(char* str, size_t len, int* idx, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt,
-                  char* msg, size_t* msg_len, pdu_udh_t* udh);
-int at_parse_cmt(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh);
-int at_parse_cbm(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh);
-int at_parse_cds(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, char* scts, int* mr, int* st, char* dt, char* msg,
-                 size_t* msg_len, pdu_udh_t* udh);
+int at_parse_cmgr(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                  struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh);
+int at_parse_cmgl(char* str, size_t len, int* idx, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                  struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh);
+int at_parse_cmt(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh);
+int at_parse_cbm(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh);
+int at_parse_cds(char* str, size_t len, int* tpdu_type, char* sca, size_t sca_len, char* oa, size_t oa_len, struct ast_tm* scts, int* mr, int* st,
+                 struct ast_tm* dt, char* msg, size_t* msg_len, pdu_udh_t* udh);
 int at_parse_cmgs(const char* str);
 int at_parse_cusd(char* str, int* type, char** cusd, int* dcs);
 int at_parse_cpin(const char* str, const size_t len);
@@ -53,8 +53,8 @@ int at_parse_ccwa(char* str, ccwa_variant_t* variant, unsigned int*, unsigned in
 int at_parse_qtonedet(const char* str, int* dtmf);
 int at_parse_dtmf(char* str, char* dtmf);
 int at_parse_qpcmv(char* str, int* enabled, int* mode);
-int at_parse_qlts(char* str, char** ts);
-int at_parse_cclk(char* str, char** ts);
+int at_parse_qlts(char* str, struct ast_tm* const ts);
+int at_parse_cclk(char* str, struct ast_tm* ts);
 int at_parse_qrxgain(const char* str, int* gain);
 int at_parse_qmic(const char* str, int* gain, int* dgain);
 int at_parse_cxxxgain(const char* str, int* gain);

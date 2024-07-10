@@ -6,6 +6,8 @@
 
 #include "ast_config.h"
 
+#include <asterisk/localtime.h>
+
 #include "pdu.h"
 
 #include "char_conv.h" /* utf8_to_hexstr_ucs2() */
@@ -335,33 +337,33 @@ static char pdu_code2digit(uint8_t code)
     }
 }
 
+static int div_up(unsigned int minutes, int divisor) { return (minutes + divisor - 1) / divisor; }
+
 #/* convert minutes to relative VP value */
 
 static int pdu_relative_validity(unsigned minutes)
 {
-#define DIV_UP(x, y) (((x) + (y)-1) / (y))
+    /* clang-format off */
     /*
-        0 ... 143  (vp + 1) * 5 minutes				   5  ...   720		m = (vp + 1) * 5		m / 5 - 1 = vp
-        144...167  12 hours + (vp - 143) * 30 minutes		 750  ...  1440		m = 720 + (vp - 143) * 30	(m - 720) /
-       30 + 143 = m / 30 + 119
-        168...196  (vp - 166) * 1 day				2880  ... 43200		m = (vp - 166) * 1440		(m / 1440) + 166
-        197...255  (vp - 192) * 1 week			       50400  ...635040		m = (vp - 192) * 10080		(m / 10080) +
-       192
+	    0 ... 143  (vp + 1) * 5 minutes				    5...720         m = (vp + 1) * 5            m / 5 - 1 = vp
+	    144...167  12 hours + (vp - 143) * 30 minutes   750...1440      m = 720 + (vp - 143) * 30   (m - 720) / 30 + 143 = m / 30 + 119
+	    168...196  (vp - 166) * 1 day                   2880...43200    m = (vp - 166) * 1440		(m / 1440) + 166
+	    197...255  (vp - 192) * 1 week                  50400...635040  m = (vp - 192) * 10080      (m / 10080) + 192
     */
+    /* clang-format on */
     int validity;
     if (minutes <= 720) {
-        validity = DIV_UP(minutes, 5) - 1;
+        validity = div_up(minutes, 5) - 1;
     } else if (minutes <= 1440) {
-        validity = DIV_UP(minutes, 30) + 119;
+        validity = div_up(minutes, 30) + 119;
     } else if (minutes <= 43200) {
-        validity = DIV_UP(minutes, 1440) + 166;
+        validity = div_up(minutes, 1440) + 166;
     } else if (minutes <= 635040) {
-        validity = DIV_UP(minutes, 10080) + 192;
+        validity = div_up(minutes, 10080) + 192;
     } else {
         validity = 0xFF;
     }
     return validity;
-#undef DIV_UP
 }
 
 /*!
@@ -444,23 +446,27 @@ static int pdu_parse_number(uint8_t* pdu, size_t pdu_length, unsigned digits, ch
 
 #/* */
 
-static int pdu_parse_timestamp(uint8_t* pdu, size_t length, char* out)
+static int pdu_parse_timestamp(const uint8_t* const pdu, size_t length, struct ast_tm* tm)
 {
-    if (length >= 7) {
-        const int y  = (10 * (pdu[0] & 15) + (pdu[0] >> 4)) + 2000;
-        const int m  = 10 * (pdu[1] & 15) + (pdu[1] >> 4);
-        const int d  = 10 * (pdu[2] & 15) + (pdu[2] >> 4);
-        const int h  = 10 * (pdu[3] & 15) + (pdu[3] >> 4);
-        const int i  = 10 * (pdu[4] & 15) + (pdu[4] >> 4);
-        const int s  = 10 * (pdu[5] & 15) + (pdu[5] >> 4);
-        const int o  = (pdu[6] >> 4) + 10 * (pdu[6] & 7);
-        const int os = pdu[6] & 0x8;
+    static const long HOUR_QUATER_SEC = 15 * 60;
 
-        sprintf(out, "%04d-%02d-%02d %02d:%02d:%02d %c%02d:%02d", y, m, d, h, i, s, os ? '-' : '+', o / 4, (o % 4) * 15);
-
-        return 7;
+    if (length < 7) {
+        return -1;
     }
-    return -1;
+
+    memset(tm, 0, sizeof(*tm));
+
+    tm->tm_year   = 10 * (pdu[0] & 15) + (pdu[0] >> 4) + 100;
+    tm->tm_mon    = 10 * (pdu[1] & 15) + (pdu[1] >> 4) - 1;
+    tm->tm_mday   = 10 * (pdu[2] & 15) + (pdu[2] >> 4);
+    tm->tm_hour   = 10 * (pdu[3] & 15) + (pdu[3] >> 4);
+    tm->tm_min    = 10 * (pdu[4] & 15) + (pdu[4] >> 4);
+    tm->tm_sec    = 10 * (pdu[5] & 15) + (pdu[5] >> 4);
+    const int o   = 10 * (pdu[6] & 7) + (pdu[6] >> 4);
+    const int os  = pdu[6] & 0x8;
+    tm->tm_gmtoff = HOUR_QUATER_SEC * o * (os ? -1 : 1);
+    ast_tm_normalize(tm);
+    return 7;
 }
 
 int pdu_build_mult(pdu_part_t* pdus, const char* sca, const char* dst, const uint16_t* msg, size_t msg_len, unsigned valid_minutes, int srr, uint8_t csmsref)
@@ -695,7 +701,7 @@ int tpdu_parse_type(uint8_t* pdu, size_t pdu_length, int* type)
     return 1;
 }
 
-int tpdu_parse_status_report(uint8_t* pdu, size_t pdu_length, int* mr, char* ra, size_t ra_len, char* scts, char* dt, int* st)
+int tpdu_parse_status_report(uint8_t* pdu, size_t pdu_length, int* mr, char* ra, size_t ra_len, struct ast_tm* scts, struct ast_tm* dt, int* st)
 {
     int i = 0;
 
@@ -723,7 +729,7 @@ int tpdu_parse_status_report(uint8_t* pdu, size_t pdu_length, int* mr, char* ra,
     return 0;
 }
 
-int tpdu_parse_deliver(uint8_t* pdu, size_t pdu_length, int tpdu_type, char* oa, size_t oa_len, char* scts, uint16_t* msg, pdu_udh_t* udh)
+int tpdu_parse_deliver(uint8_t* pdu, size_t pdu_length, int tpdu_type, char* oa, size_t oa_len, struct ast_tm* scts, uint16_t* msg, pdu_udh_t* udh)
 {
     int i = 0, field_len, oa_digits, pid, dcs, alphabet, udl, udhl, msg_padding = 0;
 

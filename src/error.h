@@ -38,7 +38,7 @@ enum error {
     E_MALLOC
 };
 
-const char* attribute_const error2str(int err);
+const char* error2str(int err);
 
 extern __thread int chan_quectel_err;
 

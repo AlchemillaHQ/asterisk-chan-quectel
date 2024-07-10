@@ -8,11 +8,11 @@ OpenWRT package building procedure:
 
 Example:
 
-wget https://downloads.openwrt.org/releases/22.03.5/targets/x86/64/openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-tar -xf openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-rm openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-cp feeds-strskx.conf diffconfig build-opk.sh openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64
-cd openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64
+wget https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+tar -xf openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+rm openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+cp feeds-strskx.conf diffconfig build-opk.sh openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64
+cd openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64
 ./build-opk.sh
 ls bin/packages/*/strskx/*.ipk
 

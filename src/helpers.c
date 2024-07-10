@@ -53,12 +53,26 @@ static struct pvt* get_pvt(const char* dev_name, int online)
     struct pvt* const pvt = pvt_find_by_ext(dev_name);
 
     if (!pvt) {
-        chan_quectel_err = E_DEVICE_DISCONNECTED;
+        chan_quectel_err = E_DEVICE_NOT_FOUND;
         return NULL;
     }
 
     if (!pvt->connected || (online && !(pvt->initialized && pvt->gsm_registered))) {
         ast_mutex_unlock(&pvt->lock);
+        chan_quectel_err = E_DEVICE_DISABLED;
+        return NULL;
+    }
+
+    return pvt;
+}
+
+static struct pvt* get_msg_pvt(const char* resource)
+{
+    int exists;
+    struct pvt* const pvt = pvt_msg_find_by_resource(resource, 0, NULL, &exists);
+
+    if (!pvt) {
+        chan_quectel_err = E_DEVICE_NOT_FOUND;
         return NULL;
     }
 
@@ -86,20 +100,20 @@ int send_ussd(const char* dev_name, const char* ussd)
 
 #/* */
 
-int send_sms(const char* const dev_name, const char* const number, const char* const message, int validity, int report)
+int send_sms(const char* const resource, const char* const sca, const char* const destination, const char* const message, int validity, int report)
 {
-    if (!is_valid_phone_number(number)) {
+    if (!is_valid_phone_number(destination)) {
         chan_quectel_err = E_INVALID_PHONE_NUMBER;
         return -1;
     }
 
-    RAII_VAR(struct pvt* const, pvt, get_pvt(dev_name, 1), pvt_unlock);
+    RAII_VAR(struct pvt* const, pvt, get_msg_pvt(resource), pvt_unlock);
 
     if (!pvt) {
         return -1;
     }
 
-    const int res = at_enqueue_sms(&pvt->sys_chan, number, message, validity, report);
+    const int res = at_enqueue_sms(&pvt->sys_chan, sca, destination, message, validity, report);
     return res;
 }
 
@@ -525,7 +539,7 @@ static char* escape_c(char* dest, const char* s, size_t size)
     return dest;
 }
 
-size_t attribute_const get_esc_str_buffer_size(size_t len) { return (len * 2u) + 1u; }
+size_t get_esc_str_buffer_size(size_t len) { return (len * 2u) + 1u; }
 
 struct ast_str* escape_nstr(const char* buf, size_t cnt)
 {
@@ -538,9 +552,7 @@ struct ast_str* escape_nstr(const char* buf, size_t cnt)
     // build null-terminated string
     struct ast_str* nbuf = ast_str_create(cnt + 1u);
     memcpy(ast_str_buffer(nbuf), buf, cnt);
-    *(ast_str_buffer(nbuf) + cnt) = '\000';
-    nbuf->used                    = cnt;
-    // ast_str_update(nbuf);
+    ast_str_truncate(nbuf, cnt);
 
     // unescape string
     struct ast_str* const ebuf = ast_str_create(get_esc_str_buffer_size(cnt));
@@ -561,9 +573,7 @@ const char* escape_nstr_ex(struct ast_str* ebuf, const char* buf, size_t cnt)
     // build null-terminated string
     struct ast_str* nbuf = ast_str_create(cnt + 1u);
     memcpy(ast_str_buffer(nbuf), buf, cnt);
-    *(ast_str_buffer(nbuf) + cnt) = '\000';
-    nbuf->used                    = cnt;
-    // ast_str_update(nbuf);
+    ast_str_truncate(nbuf, cnt);
 
     // unescape string
     const char* const res = escape_str_ex(ebuf, nbuf);
@@ -600,25 +610,70 @@ const char* escape_str_ex(struct ast_str* ebuf, const struct ast_str* const str)
 
 #/* */
 
-const char* attribute_const gsm_regstate2str(int gsm_reg_status)
+int gsm_is_registered(int stat)
 {
-    static const char* const gsm_states[] = {
-        "Not registered, not searching", "Registered, home network", "Not registered, but searching", "Registration denied", "Unknown", "Registered, roaming",
-    };
+    switch (stat) {
+        case 0:  // not registered, MT is not currently searching an operator to register to
+        case 2:  // not registered, but MT is currently trying to attach or searching an operator to register to
+        case 3:  // registration denied
+            return 0;
+
+        case 1:  // registered, home network
+        case 4:  // unknown (e.g. out of E-UTRAN coverage)
+        case 5:  // registered, roaming
+        case 6:  // registered for "SMS only", home network (not applicable)
+        case 7:  // registered for "SMS only", roaming (not applicable)
+        case 8:  // attached for emergency bearer services only
+            return 1;
+
+        default:
+            return 0;
+    }
+}
+
+const char* gsm_regstate2str(int gsm_reg_status)
+{
+    static const char* const gsm_states[] = {"Not registered, not searching",
+                                             "Registered, home network",
+                                             "Not registered, but searching",
+                                             "Registration denied",
+                                             "Unknown",
+                                             "Registered, roaming",
+                                             "Registered for<SMS only, home network",
+                                             "Registered for “SMS only”, roaming",
+                                             "Attached for emergency bearer services only"};
     return enum2str_def(gsm_reg_status, gsm_states, ARRAY_LEN(gsm_states), "Unknown");
 }
 
-const char* attribute_const gsm_regstate2str_json(int gsm_reg_status)
+const char* gsm_regstate2str_json(int gsm_reg_status)
 {
     static const char* const gsm_states[] = {
-        "not_registered_not_searching", "registered", "not_registered_searching", "registration_denied", "unknown", "registered_roaming",
-    };
+        "not_registered_not_searching", "registered", "not_registered_searching", "registration_denied", "unknown", "registered_roaming", "registered_sms_only",
+        "registered_sms_only_roaming",  "emergency"};
     return enum2str_def(gsm_reg_status, gsm_states, ARRAY_LEN(gsm_states), "unknown");
 }
 
 #/* */
 
-const char* attribute_const sys_act2str(int act)
+int map_creg_act(int act)
+{
+    switch (act) {
+        case 0:  // GSM
+        case 1:  // GSM Compact
+        case 2:  // UTRAN
+        case 3:  // GSM w/EGPRS
+        case 4:  // UTRAN w/HSDPA
+        case 5:  // UTRAN w/HSUPA
+        case 6:  // UTRAN w/HSDPA and HSUPA
+        case 7:  // E-UTRAN
+            return act + 1;
+
+        default:
+            return -1;
+    }
+}
+
+const char* sys_act2str(int act)
 {
     static const char* const sys_acts[] = {
         "No service",
@@ -698,4 +753,64 @@ size_t fd_write_all(int fd, const char* buf, size_t count)
     }
 
     return total;
+}
+
+static const char* const dev_state_strs[4]             = {"stop", "restart", "remove", "start"};
+static const char* const dev_state_strs_capitalized[4] = {"Stop", "Restart", "Remove", "Start"};
+
+public_state_t* gpublic;
+
+const char* dev_state2str(dev_state_t state) { return enum2str(state, dev_state_strs, ARRAY_LEN(dev_state_strs)); }
+
+const char* dev_state2str_capitalized(dev_state_t state) { return enum2str(state, dev_state_strs_capitalized, ARRAY_LEN(dev_state_strs_capitalized)); }
+
+dev_state_t str2dev_state(const char* str)
+{
+    if (!str) {
+        return DEV_STATE_STOPPED;
+    }
+
+    const int res = str2enum(str, dev_state_strs, ARRAY_LEN(dev_state_strs));
+    if (res < 0) {
+        return DEV_STATE_STOPPED;
+    } else {
+        return (dev_state_t)res;
+    }
+}
+
+const char* dev_state2str_msg(dev_state_t state)
+{
+    static const char* const states[] = {"Stop scheduled", "Restart scheduled", "Removal scheduled", "Start scheduled"};
+    return enum2str(state, states, ARRAY_LEN(states));
+}
+
+const char* restate2str_msg(restate_time_t when)
+{
+    static const char* const choices[] = {"Now", "Gracefully", "When convenient"};
+    return enum2str(when, choices, ARRAY_LEN(choices));
+}
+
+int format_ast_tm(const struct ast_tm* const tm, struct ast_str* str)
+{
+    static char AST_TM_FMT[]  = "%FT%T%z";
+    static char AST_TM_FMTZ[] = "%FT%TZ";
+    const int res             = ast_strftime(ast_str_buffer(str), ast_str_size(str), tm->tm_gmtoff ? AST_TM_FMT : AST_TM_FMTZ, tm);
+    if (res >= 0) {
+        ast_str_truncate(str, res);
+        return 0;
+    } else {
+        ast_str_reset(str);
+        return -1;
+    }
+}
+
+struct ast_tm* ast_tm_normalize(struct ast_tm* const tm)
+{
+    const long gmtoff    = tm->tm_gmtoff;
+    struct timeval tmval = ast_mktime(tm, "UTC");
+
+    tmval.tv_sec -= gmtoff;
+    ast_localtime(&tmval, tm, "UTC");
+    tm->tm_gmtoff = gmtoff;
+    return tm;
 }

@@ -44,16 +44,16 @@ static const size_t DBKEY_DEF_LEN = 32;
 DEFINE_SQL_STATEMENT(get_incomingmsg, "SELECT message FROM incoming_msg WHERE key = ? ORDER BY seqorder")
 DEFINE_SQL_STATEMENT(get_incomingmsg_cnt, "SELECT COUNT(seqorder) FROM incoming_msg WHERE key = ?")
 DEFINE_SQL_STATEMENT(put_incomingmsg,
-                     "INSERT OR REPLACE INTO incoming_msg (key, seqorder, expiration, message)"
-                     "VALUES (?, ?, unixepoch('now') + ?, ?)")
+                     "INSERT OR REPLACE INTO incoming_msg (key, seqorder, expiration, message) "
+                     "VALUES (?, ?, strftime('%s') + ?, ?)")
 DEFINE_SQL_STATEMENT(del_incomingmsg, "DELETE FROM incoming_msg WHERE key = ?")
 
 // OPER: outgoing_msg
-DEFINE_SQL_STATEMENT(put_outgoingmsg, "INSERT INTO outgoing_msg (dev, dst, message, cnt, expiration, srr) VALUES (?, ?, ?, ?, unixepoch('now') + ?, ?)")
+DEFINE_SQL_STATEMENT(put_outgoingmsg, "INSERT INTO outgoing_msg (dev, dst, message, cnt, expiration, srr) VALUES (?, ?, ?, ?, strftime('%s') + ?, ?)")
 DEFINE_SQL_STATEMENT(del_outgoingmsg, "DELETE FROM outgoing_msg WHERE uid = ?")
 DEFINE_SQL_STATEMENT(get_outgoingmsg_key, "SELECT dev, dst, srr FROM outgoing_msg WHERE uid = ?")
 DEFINE_SQL_STATEMENT(get_outgoingmsg, "SELECT dst, message FROM outgoing_msg WHERE uid = ?")
-DEFINE_SQL_STATEMENT(get_outgoingmsg_expired, "SELECT uid, dst, message FROM outgoing_msg WHERE expiration < unixepoch('now') LIMIT 1")
+DEFINE_SQL_STATEMENT(get_outgoingmsg_expired, "SELECT uid, dst, message FROM outgoing_msg WHERE expiration < strftime('%s') LIMIT 1")
 
 // OPER: outgoing_ref
 DEFINE_SQL_STATEMENT(put_outgoingref, "INSERT INTO outgoing_ref (key) VALUES (?)")
@@ -69,11 +69,15 @@ DEFINE_SQL_STATEMENT(get_all_status, "SELECT status FROM outgoing_part WHERE msg
 
 // OPER: outgoing_msg, outgoing_part
 DEFINE_SQL_STATEMENT(cnt_outgoingpart,
-                     "SELECT m.cnt, (SELECT COUNT(p.rowid) FROM outgoing_part p WHERE p.msg = m.rowid AND (p.status & 64 != 0 OR "
-                     "p.status & 32 = 0)) FROM outgoing_msg m WHERE m.rowid = ?")
+                     "SELECT m.cnt, (SELECT COUNT(p.rowid) FROM outgoing_part p "
+                     "               WHERE p.msg = m.rowid AND "
+                     "               (p.status & 64 != 0 OR p.status & 32 = 0)) "
+                     "FROM outgoing_msg m WHERE m.rowid = ?")
 DEFINE_SQL_STATEMENT(cnt_all_outgoingpart,
-                     "SELECT m.cnt, (SELECT COUNT(p.rowid) FROM outgoing_part p WHERE p.msg = m.uid) FROM outgoing_msg "
-                     "m WHERE m.uid = ?")
+                     "SELECT m.cnt, (SELECT COUNT(p.rowid) FROM outgoing_part p "
+                     "               WHERE p.msg = m.uid) "
+                     "FROM outgoing_msg m "
+                     "WHERE m.uid = ?")
 
 static sqlite3* smsdb;
 
@@ -100,17 +104,42 @@ static int bind_ast_str(sqlite3_stmt* stmt, int colno, const struct ast_str* con
     return sqlite3_bind_text(stmt, colno, ast_str_buffer(str), ast_str_strlen(str), SQLITE_TRANSIENT);
 }
 
+#if SQLITE_VERSION_NUMBER >= 3020000
+
+//
+// sqlite3_prepare_v3 function have been introduced in version 3.20.0 (2017-08-01) of SQLite
+//
 static int init_stmt(sqlite3_stmt** stmt, const char* sql, size_t len)
 {
-    if (sqlite3_prepare_v3(smsdb, sql, len, SQLITE_PREPARE_PERSISTENT, stmt, NULL) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't prepare statement '%s': %s\n", sql, sqlite3_errmsg(smsdb));
+    const int res = sqlite3_prepare_v3(smsdb, sql, len, SQLITE_PREPARE_PERSISTENT, stmt, NULL);
+    if (res != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't prepare statement '%s': [%d] %s\n", sql, res, sqlite3_errmsg(smsdb));
         return -1;
     }
 
     return 0;
 }
 
+#else
+
+//
+// sqlite3_prepare_v2 function have been introduced in version 3.3.9 (2007-01-04) of SQLite
+//
+static int init_stmt(sqlite3_stmt** stmt, const char* sql, size_t len)
+{
+    const int res = sqlite3_prepare_v2(smsdb, sql, len, stmt, NULL);
+    if (res != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't prepare statement '%s': [%d] %s\n", sql, res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    return 0;
+}
+
+#endif
+
 #define INIT_STMT(s) init_stmt(&s##_stmt, s##_sql, sizeof(s##_sql))
+#define INIT_VSTMT(s) const int s##_res = init_stmt(&s##_stmt, s##_sql, sizeof(s##_sql))
 
 /* We purposely don't lock around the sqlite3 call because the transaction
  * calls will be called with the database lock held. For any other use, make
@@ -121,7 +150,7 @@ static int execute_sql(const char* sql, int (*callback)(void*, int, char**, char
     const int res = sqlite3_exec(smsdb, sql, callback, arg, &errmsg);
 
     if (res != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Error executing SQL (%s): %s\n", sql, errmsg);
+        ast_log(LOG_WARNING, "Error executing SQL (%s): [%d] %s\n", sql, res, errmsg);
         sqlite3_free(errmsg);
     }
 
@@ -131,6 +160,7 @@ static int execute_sql(const char* sql, int (*callback)(void*, int, char**, char
 static int execute_ast_str(const struct ast_str* const str) { return execute_sql(ast_str_buffer(str), NULL, NULL); }
 
 #define EXECUTE_STMT(s) execute_sql(s##_sql, NULL, NULL)
+#define EXECUTE_VSTMT(s) const int s##_res = execute_sql(s##_sql, NULL, NULL)
 
 /*! \internal
  * \brief Clean up the prepared SQLite3 statement
@@ -138,8 +168,9 @@ static int execute_ast_str(const struct ast_str* const str) { return execute_sql
  */
 static int clean_stmt(sqlite3_stmt** stmt, const char* sql)
 {
-    if (sqlite3_finalize(*stmt) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't finalize statement '%s': %s\n", sql, sqlite3_errmsg(smsdb));
+    const int res = sqlite3_finalize(*stmt);
+    if (res != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't finalize statement '%s': [%d] %s\n", sql, res, sqlite3_errmsg(smsdb));
         *stmt = NULL;
         return -1;
     }
@@ -171,19 +202,22 @@ static void commit_transaction(int res)
     RAII_VAR(int, varname, begin_transaction(), commit_transaction); \
     if (varname != SQLITE_OK) return -1;
 
-static void stmt_begin(sqlite3_stmt* stmt)
+static sqlite3_stmt* stmt_begin(int level, const char* file, int line, const char* function, sqlite3_stmt* const stmt)
 {
     if (!stmt) {
-        return;
+        ast_log(level, file, line, function, "Trying to begin uninitialized statement\n");
+        return NULL;
     }
 
     const int res = sqlite3_clear_bindings(stmt);
     if (res != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Fail to clear bindings: %s\n", sqlite3_errstr(res));
+        ast_log(level, file, line, function, "Fail to clear bindings: [%d] %s\n", res, sqlite3_errmsg(smsdb));
     }
+
+    return stmt;
 }
 
-static void stmt_end(sqlite3_stmt* stmt)
+static void stmt_end(int level, const char* file, int line, const char* function, sqlite3_stmt* const stmt)
 {
     if (!stmt) {
         return;
@@ -191,18 +225,44 @@ static void stmt_end(sqlite3_stmt* stmt)
 
     const int res = sqlite3_reset(stmt);
     if (res != SQLITE_OK) {
-        ast_log(LOG_ERROR, "Fail to reset statement: %s\n", sqlite3_errstr(res));
+        ast_log(level, file, line, function, "Fail to reset statement: [%d] %s\n", res, sqlite3_errmsg(smsdb));
     }
 }
 
-#define SCOPED_STMT(s) SCOPED_LOCK(s, s##_stmt, stmt_begin, stmt_end)
+#define SCOPED_STMT(s)                                                       \
+    auto void _stmt_dtor_##s(sqlite3_stmt* const*);                          \
+    void _stmt_dtor_##s(sqlite3_stmt* const* s) { stmt_end(LOG_ERROR, *s); } \
+    sqlite3_stmt* const s __attribute__((cleanup(_stmt_dtor_##s))) = stmt_begin(LOG_WARNING, s##_stmt)
+
+static sqlite3_mutex* db_lock(sqlite3* db)
+{
+    //
+    // sqlite3_db_mutex function have been introduced in version 3.6.5 (2008-11-12) of SQLite
+    //
+    sqlite3_mutex* const mtx = sqlite3_db_mutex(db);
+    if (!mtx) {
+        return NULL;
+    }
+    sqlite3_mutex_enter(mtx);
+    return mtx;
+}
+
+static void db_unlock(sqlite3_mutex* const mtx)
+{
+    if (!mtx) {
+        return;
+    }
+    sqlite3_mutex_leave(mtx);
+}
+
+#define SCOPED_DB(d) RAII_VAR(sqlite3_mutex*, d##_mtx, db_lock(d), db_unlock)
 
 static int db_create(void)
 {
     // TABLE: incoming_msg
     DEFINE_INTERNAL_SQL_STATEMENT(create_incomingmsg,
                                   "CREATE TABLE IF NOT EXISTS incoming_msg (key VARCHAR(256), seqorder INTEGER,"
-                                  "expiration TIMESTAMP DEFAULT (unixepoch('now')), message VARCHAR(256), PRIMARY KEY(key, seqorder))")
+                                  "expiration TIMESTAMP DEFAULT (strftime('%s')), message VARCHAR(256), PRIMARY KEY(key, seqorder))")
     DEFINE_INTERNAL_SQL_STATEMENT(create_incomingmsg_index, "CREATE INDEX IF NOT EXISTS incoming_key ON incoming_msg(key)")
 
     // TABLE: outgoing_msg(KEY: IMSI/DEST_ADDR)
@@ -218,25 +278,57 @@ static int db_create(void)
                                   "CREATE TABLE IF NOT EXISTS outgoing_part (key VARCHAR(256), msg INTEGER, status INTEGER, PRIMARY KEY(key))")
     DEFINE_INTERNAL_SQL_STATEMENT(create_outgoingpart_index, "CREATE INDEX IF NOT EXISTS outgoing_part_msg ON outgoing_part(msg)")
 
+    SCOPED_DB(smsdb);
     SCOPED_TRANSACTION(dbtrans);
 
-    return EXECUTE_STMT(create_incomingmsg) || EXECUTE_STMT(create_incomingmsg_index) || EXECUTE_STMT(create_outgoingmsg) || EXECUTE_STMT(create_outgoingref) ||
-           EXECUTE_STMT(create_outgoingpart) || EXECUTE_STMT(create_outgoingpart_index);
+    EXECUTE_VSTMT(create_incomingmsg);
+    EXECUTE_VSTMT(create_incomingmsg_index);
+    EXECUTE_VSTMT(create_outgoingmsg);
+    EXECUTE_VSTMT(create_outgoingref);
+    EXECUTE_VSTMT(create_outgoingpart);
+    EXECUTE_VSTMT(create_outgoingpart_index);
+
+    return create_incomingmsg_res || create_incomingmsg_index_res || create_outgoingmsg_res || create_outgoingref_res || create_outgoingpart_res ||
+           create_outgoingpart_index_res;
 }
 
 static int db_init_statements(void)
 {
     /* Don't initialize create_smsdb_statement here as the smsdb table needs to exist
      * brefore these statements can be initialized */
-    return INIT_STMT(get_incomingmsg) || INIT_STMT(put_incomingmsg) || INIT_STMT(del_incomingmsg) || INIT_STMT(get_incomingmsg_cnt) ||
-           INIT_STMT(put_outgoingref) || INIT_STMT(set_outgoingref) || INIT_STMT(get_outgoingref) || INIT_STMT(put_outgoingmsg) ||
-           INIT_STMT(put_outgoingpart) || INIT_STMT(del_outgoingmsg) || INIT_STMT(del_outgoingpart) || INIT_STMT(get_outgoingmsg_key) ||
-           INIT_STMT(get_outgoingpart) || INIT_STMT(set_outgoingpart) || INIT_STMT(cnt_outgoingpart) || INIT_STMT(cnt_all_outgoingpart) ||
-           INIT_STMT(get_outgoingmsg) || INIT_STMT(get_all_status) || INIT_STMT(get_outgoingmsg_expired);
+
+    SCOPED_DB(smsdb);
+
+    INIT_VSTMT(get_incomingmsg);
+    INIT_VSTMT(put_incomingmsg);
+    INIT_VSTMT(del_incomingmsg);
+    INIT_VSTMT(get_incomingmsg_cnt);
+    INIT_VSTMT(put_outgoingref);
+    INIT_VSTMT(set_outgoingref);
+    INIT_VSTMT(get_outgoingref);
+    INIT_VSTMT(put_outgoingmsg);
+    INIT_VSTMT(put_outgoingpart);
+    INIT_VSTMT(del_outgoingmsg);
+    INIT_VSTMT(del_outgoingpart);
+    INIT_VSTMT(get_outgoingmsg_key);
+    INIT_VSTMT(get_outgoingpart);
+    INIT_VSTMT(set_outgoingpart);
+    INIT_VSTMT(cnt_outgoingpart);
+    INIT_VSTMT(cnt_all_outgoingpart);
+    INIT_VSTMT(get_outgoingmsg);
+    INIT_VSTMT(get_all_status);
+    INIT_VSTMT(get_outgoingmsg_expired);
+
+    return get_incomingmsg_res || put_incomingmsg_res || del_incomingmsg_res || get_incomingmsg_cnt_res || put_outgoingref_res || set_outgoingref_res ||
+           get_outgoingref_res || put_outgoingmsg_res || put_outgoingpart_res || del_outgoingmsg_res || del_outgoingpart_res || get_outgoingmsg_key_res ||
+           get_outgoingpart_res || set_outgoingpart_res || cnt_outgoingpart_res || cnt_all_outgoingpart_res || get_outgoingmsg_res || get_all_status_res ||
+           get_outgoingmsg_expired_res;
 }
 
 static void db_clean_statements(void)
 {
+    SCOPED_DB(smsdb);
+
     CLEAN_STMT(get_incomingmsg);
     CLEAN_STMT(get_incomingmsg_cnt);
     CLEAN_STMT(put_incomingmsg);
@@ -280,8 +372,12 @@ static int db_name_temporary(const char* db)
 
 static int db_open_url(const char* url)
 {
-    if (sqlite3_open(url, &smsdb) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Unable to open Asterisk database '%s': %s\n", url, sqlite3_errmsg(smsdb));
+    //
+    // sqlite3_open_v2 function have been introduced in version 3.5.0 (2007-09-04) of SQLite
+    //
+    const int res = sqlite3_open_v2(url, &smsdb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (res != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Unable to open database '%s': [%d] %s\n", url, res, sqlite3_errmsg(smsdb));
         sqlite3_close(smsdb);
         return -1;
     }
@@ -317,6 +413,101 @@ static int db_init()
     return 0;
 }
 
+static int put_incmsg(const struct ast_str* const fullkey, int order, const char* msg)
+{
+    int res;
+    const int ttl = CONF_GLOBAL(sms_ttl);
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(put_incomingmsg);
+
+    if ((res = bind_ast_str(put_incomingmsg, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_incomingmsg, 2, order)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind order to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_incomingmsg, 3, ttl)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind TTL to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_text(put_incomingmsg, 4, msg, -1, SQLITE_TRANSIENT)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind msg to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(put_incomingmsg)) != SQLITE_DONE) {
+        ast_log(LOG_WARNING, "Couldn't execute statement: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    return 0;
+}
+
+static int get_incmsg_cnt(const struct ast_str* const fullkey)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_incomingmsg_cnt);
+
+    if ((res = bind_ast_str(get_incomingmsg_cnt, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(get_incomingmsg_cnt)) != SQLITE_ROW) {
+        ast_debug(1, "Unable to find key '%s'\n", ast_str_buffer(fullkey));
+        return -1;
+    }
+
+    return sqlite3_column_int(get_incomingmsg_cnt, 0);
+}
+
+static int get_incmsg(const struct ast_str* const fullkey, struct ast_str** out)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_incomingmsg);
+
+    if ((res = bind_ast_str(get_incomingmsg, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    while ((res = sqlite3_step(get_incomingmsg)) == SQLITE_ROW) {
+        append_ast_str(get_incomingmsg, 0, out);
+    }
+
+    return (res == SQLITE_DONE) ? 0 : -1;
+}
+
+static int del_incmsg(const struct ast_str* const fullkey)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(del_incomingmsg);
+
+    if ((res = bind_ast_str(del_incomingmsg, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(del_incomingmsg)) != SQLITE_DONE) {
+        ast_debug(1, "Unable to find key '%s'; Ignoring\n", ast_str_buffer(fullkey));
+        return 0;
+    }
+
+    return 0;
+}
+
 /*!
  * \brief Adds a message part into the DB and returns the whole message into 'out' when the message is complete.
  * \param id -- Some ID for the device or so, e.g. the IMSI
@@ -331,392 +522,501 @@ static int db_init()
  */
 int smsdb_put(const char* id, const char* addr, int ref, int parts, int order, const char* msg, struct ast_str** out)
 {
-    int res = 0;
-    int ttl = CONF_GLOBAL(csms_ttl);
-
     RAII_VAR(struct ast_str*, fullkey, ast_str_create(DBKEY_DEF_LEN), ast_free);
-    const int fullkey_len = ast_str_set(&fullkey, 0, "%s/%s/%d/%d", id, addr, ref, parts);
-    if (fullkey_len < 0) {
+    if (ast_str_set(&fullkey, 0, "%s/%s/%d/%d", id, addr, ref, parts) < 0) {
         ast_log(LOG_ERROR, "Fail to create key\n");
         return -1;
     }
 
+    int res;
     SCOPED_TRANSACTION(dbtrans);
 
-    {
-        SCOPED_STMT(put_incomingmsg);
-        if (bind_ast_str(put_incomingmsg, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_bind_int(put_incomingmsg, 2, order) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind order to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_bind_int(put_incomingmsg, 3, ttl) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind TTL to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_bind_text(put_incomingmsg, 4, msg, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind msg to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(put_incomingmsg) != SQLITE_DONE) {
-            ast_log(LOG_WARNING, "Couldn't execute statement: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        }
+    if ((res = put_incmsg(fullkey, order, msg))) {
+        return res;
     }
 
-    {
-        SCOPED_STMT(get_incomingmsg_cnt);
-        if (bind_ast_str(get_incomingmsg_cnt, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(get_incomingmsg_cnt) != SQLITE_ROW) {
-            ast_debug(1, "Unable to find key '%s'\n", ast_str_buffer(fullkey));
-            res = -1;
-        }
-        res = sqlite3_column_int(get_incomingmsg_cnt, 0);
-    }
-
-    if (res == parts) {
-        {
-            SCOPED_STMT(get_incomingmsg);
-            if (bind_ast_str(get_incomingmsg, 1, fullkey) != SQLITE_OK) {
-                ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-                res = -1;
-            } else {
-                while (sqlite3_step(get_incomingmsg) == SQLITE_ROW) {
-                    append_ast_str(get_incomingmsg, 0, out);
-                }
-            }
-        }
-
-        if (res >= 0) {
-            SCOPED_STMT(del_incomingmsg);
-            if (bind_ast_str(del_incomingmsg, 1, fullkey) != SQLITE_OK) {
-                ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-                res = -1;
-            } else if (sqlite3_step(del_incomingmsg) != SQLITE_DONE) {
-                ast_debug(1, "Unable to find key '%s'; Ignoring\n", ast_str_buffer(fullkey));
-            }
+    if ((res = get_incmsg_cnt(fullkey)) == parts) {
+        if (get_incmsg(fullkey, out)) {
+            ast_str_reset(*out);
+        } else {
+            del_incmsg(fullkey);
         }
     }
 
     return res;
+}
+
+static int get_refid(const struct ast_str* const fullkey)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_outgoingref);
+
+    if ((res = bind_ast_str(get_outgoingref, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    switch (res = sqlite3_step(get_outgoingref)) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(get_outgoingref, 0);
+
+        case SQLITE_DONE:
+            return -2;
+
+        default:
+            return -1;
+    }
+}
+
+static int inc_refid(const struct ast_str* const fullkey, int use_insert)
+{
+    int res;
+
+    sqlite3_stmt* const outgoingref_stmt = use_insert ? put_outgoingref_stmt : set_outgoingref_stmt;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(outgoingref);
+
+    if ((res = bind_ast_str(outgoingref, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(outgoingref)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return 0;
 }
 
 int smsdb_get_refid(const char* id, const char* addr)
 {
-    int res = -1;
-
-    SCOPED_TRANSACTION(dbtrans);
     RAII_VAR(struct ast_str*, fullkey, ast_str_create(DBKEY_DEF_LEN), ast_free);
-
-    const int fullkey_len = ast_str_set(&fullkey, 0, "%s/%s", id, addr);
-    if (fullkey_len < 0) {
+    if (ast_str_set(&fullkey, 0, "%s/%s", id, addr) < 0) {
         ast_log(LOG_ERROR, "Fail to create key\n");
         return -1;
     }
 
-    int use_insert = 0;
+    int res, use_insert = 0;
 
-    {
-        SCOPED_STMT(get_outgoingref);
-        if (bind_ast_str(get_outgoingref, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-        } else if (sqlite3_step(get_outgoingref) != SQLITE_ROW) {
-            res        = 0;
-            use_insert = 1;
-        } else {
-            res = sqlite3_column_int(get_outgoingref, 0) + 1;
-        }
+    SCOPED_TRANSACTION(dbtrans);
+
+    if ((res = get_refid(fullkey)) == -2) {
+        res        = 0;
+        use_insert = 1;
     }
 
-    if (res >= 0) {
-        sqlite3_stmt* const outgoingref_stmt = use_insert ? put_outgoingref_stmt : set_outgoingref_stmt;
-        SCOPED_STMT(outgoingref);
-        if (bind_ast_str(outgoingref, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(outgoingref) != SQLITE_DONE) {
-            res = -1;
-        }
+    if (res < 0) {
+        return res;
     }
 
-    return (res >= 0) ? res % 256 : res;
+    inc_refid(fullkey, use_insert);
+    return (res + 1) % 256;
 }
 
 int smsdb_outgoing_add(const char* id, const char* addr, const char* msg, int cnt, int ttl, int srr)
 {
-    int res = 0;
+    int res;
 
+    SCOPED_DB(smsdb);
     SCOPED_TRANSACTION(dbtrans);
     SCOPED_STMT(put_outgoingmsg);
 
-    if (sqlite3_bind_text(put_outgoingmsg, 1, id, strlen(id), SQLITE_TRANSIENT) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind dev to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_bind_text(put_outgoingmsg, 2, addr, strlen(addr), SQLITE_TRANSIENT) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind destination address to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_bind_text(put_outgoingmsg, 3, msg, strlen(msg), SQLITE_TRANSIENT) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind message to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_bind_int(put_outgoingmsg, 4, cnt) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind count to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_bind_int(put_outgoingmsg, 5, ttl) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind TTL to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_bind_int(put_outgoingmsg, 6, srr) != SQLITE_OK) {
-        ast_log(LOG_WARNING, "Couldn't bind SRR to stmt: %s\n", sqlite3_errmsg(smsdb));
-        res = -1;
-    } else if (sqlite3_step(put_outgoingmsg) != SQLITE_DONE) {
-        res = -1;
-    } else {
-        res = sqlite3_last_insert_rowid(smsdb);
+    if ((res = sqlite3_bind_text(put_outgoingmsg, 1, id, strlen(id), SQLITE_TRANSIENT)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind dev to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
     }
 
-    return res;
+    if ((res = sqlite3_bind_text(put_outgoingmsg, 2, addr, strlen(addr), SQLITE_TRANSIENT)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind destination address to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_text(put_outgoingmsg, 3, msg, strlen(msg), SQLITE_TRANSIENT)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind message to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_outgoingmsg, 4, cnt)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind count to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_outgoingmsg, 5, ttl)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind TTL to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_outgoingmsg, 6, srr)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind SRR to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(put_outgoingmsg)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return sqlite3_last_insert_rowid(smsdb);
+}
+
+static int get_outmsg(int uid, struct ast_str** dst, struct ast_str** msg)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_outgoingmsg);
+
+    if ((res = sqlite3_bind_int(get_outgoingmsg, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(get_outgoingmsg)) != SQLITE_ROW) {
+        return -1;
+    }
+
+    res = set_ast_str(get_outgoingmsg, 0, dst);
+    res = set_ast_str(get_outgoingmsg, 1, msg);
+
+    return 0;
+}
+
+static int del_outmsg(int uid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(del_outgoingmsg);
+
+    if ((res = sqlite3_bind_int(del_outgoingmsg, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind UID to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(del_outgoingmsg)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int del_outpart(int uid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(del_outgoingpart);
+
+    if ((res = sqlite3_bind_int(del_outgoingpart, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind UID to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(del_outgoingpart)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static int smsdb_outgoing_clear_nolock(int uid)
 {
-    int res = 0;
-
-    {
-        SCOPED_STMT(del_outgoingmsg);
-        if (sqlite3_bind_int(del_outgoingmsg, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind UID to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(del_outgoingmsg) != SQLITE_DONE) {
-            res = -1;
-        }
+    if (del_outmsg(uid)) {
+        return -1;
     }
 
-    {
-        SCOPED_STMT(del_outgoingpart);
-        if (sqlite3_bind_int(del_outgoingpart, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind UID to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(del_outgoingpart) != SQLITE_DONE) {
-            res = -1;
-        }
+    if (del_outpart(uid)) {
+        return -1;
     }
 
-    return res;
+    return 0;
 }
 
-ssize_t smsdb_outgoing_clear(int uid, struct ast_str** dst, struct ast_str** msg)
+int smsdb_outgoing_clear(int uid, struct ast_str** dst, struct ast_str** msg)
 {
-    int res = 0;
-
     SCOPED_TRANSACTION(dbtrans);
 
-    {
-        SCOPED_STMT(get_outgoingmsg);
-        if (sqlite3_bind_int(get_outgoingmsg, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(get_outgoingmsg) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            set_ast_str(get_outgoingmsg, 0, dst);
-            set_ast_str(get_outgoingmsg, 1, msg);
-        }
+    if (get_outmsg(uid, dst, msg)) {
+        return -1;
     }
 
-    if (res >= 0 && smsdb_outgoing_clear_nolock(uid) < 0) {
-        res = -1;
+    if (smsdb_outgoing_clear_nolock(uid)) {
+        return -1;
     }
 
-    return res;
+    return 0;
 }
 
-ssize_t smsdb_outgoing_part_put(int uid, int refid, struct ast_str** dst, struct ast_str** msg)
+static int get_outmsg_key(int uid, int refid, struct ast_str** fullkey, int* srr)
 {
-    int res = 0;
-    int srr = 0;
+    int res;
 
-    SCOPED_TRANSACTION(dbtrans);
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_outgoingmsg_key);
+
+    if ((res = sqlite3_bind_int(get_outgoingmsg_key, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind UID to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(get_outgoingmsg_key)) != SQLITE_ROW) {
+        return -2;
+    }
+
+    const char* dev = (const char*)sqlite3_column_text(get_outgoingmsg_key, 0);
+    const char* dst = (const char*)sqlite3_column_text(get_outgoingmsg_key, 1);
+    *srr            = sqlite3_column_int(get_outgoingmsg_key, 2);
+
+    if (ast_str_set(fullkey, 0, "%s/%s/%d", dev, dst, refid) < 0) {
+        ast_log(LOG_ERROR, "Fail to create key\n");
+        return -3;
+    }
+
+    return 0;
+}
+
+static int put_outpart(const struct ast_str* const fullkey, int uid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(put_outgoingpart);
+
+    if ((res = bind_ast_str(put_outgoingpart, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(put_outgoingpart, 2, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind UID to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(put_outgoingpart)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int cnt_all_outpart(int uid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(cnt_all_outgoingpart);
+
+    if ((res = sqlite3_bind_int(cnt_all_outgoingpart, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(cnt_all_outgoingpart)) != SQLITE_ROW) {
+        return -1;
+    }
+
+    const int cur = sqlite3_column_int(cnt_all_outgoingpart, 0);
+    const int cnt = sqlite3_column_int(cnt_all_outgoingpart, 1);
+
+    if (cur != cnt) {
+        return -2;
+    }
+
+    return 0;
+}
+
+int smsdb_outgoing_part_put(int uid, int refid, struct ast_str** dst, struct ast_str** msg)
+{
+    int srr = -1;
 
     RAII_VAR(struct ast_str*, fullkey, ast_str_create(DBKEY_DEF_LEN), ast_free);
 
-    {
-        SCOPED_STMT(get_outgoingmsg_key);
-        if (sqlite3_bind_int(get_outgoingmsg_key, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind UID to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(get_outgoingmsg_key) != SQLITE_ROW) {
-            res = -2;
-        } else {
-            const char* dev       = (const char*)sqlite3_column_text(get_outgoingmsg_key, 0);
-            const char* dst       = (const char*)sqlite3_column_text(get_outgoingmsg_key, 1);
-            srr                   = sqlite3_column_int(get_outgoingmsg_key, 2);
-            const int fullkey_len = ast_str_set(&fullkey, 0, "%s/%s/%d", dev, dst, refid);
-            if (fullkey_len < 0) {
-                ast_log(LOG_ERROR, "Unable to create key\n");
-                res = -3;
-            }
-        }
+    SCOPED_TRANSACTION(dbtrans);
+
+    if (get_outmsg_key(uid, refid, &fullkey, &srr)) {
+        return -1;
     }
 
-    if (res >= 0) {
-        SCOPED_STMT(put_outgoingpart);
-        if (bind_ast_str(put_outgoingpart, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_bind_int(put_outgoingpart, 2, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind UID to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(put_outgoingpart) != SQLITE_DONE) {
-            res = -1;
-        }
+    if (put_outpart(fullkey, uid)) {
+        return -1;
     }
 
     if (!srr) {
-        res = -2;
+        return -2;
     }
 
-    // if no status report is requested, just count successfully inserted parts
-    // reached the number of parts
-    if (res >= 0) {
-        SCOPED_STMT(cnt_all_outgoingpart);
-        if (sqlite3_bind_int(cnt_all_outgoingpart, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(cnt_all_outgoingpart) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            const int cur = sqlite3_column_int(cnt_all_outgoingpart, 0);
-            const int cnt = sqlite3_column_int(cnt_all_outgoingpart, 1);
-            if (cur != cnt) {
-                res = -2;
-            }
-        }
+    if (cnt_all_outpart(uid)) {
+        return -1;
     }
 
-    // get dst
-    if (res >= 0) {
-        SCOPED_STMT(get_outgoingmsg);
-        if (sqlite3_bind_int(get_outgoingmsg, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(get_outgoingmsg) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            set_ast_str(get_outgoingmsg, 0, dst);
-            set_ast_str(get_outgoingmsg, 1, msg);
-        }
+    if (get_outmsg(uid, dst, msg)) {
+        return -1;
     }
 
     // clear if everything is finished
-    if (res >= 0 && smsdb_outgoing_clear_nolock(uid) < 0) {
-        res = -1;
+    if (smsdb_outgoing_clear_nolock(uid)) {
+        return -1;
     }
 
-    return res;
+    return 0;
 }
 
-ssize_t smsdb_outgoing_part_status(const char* id, const char* addr, int mr, int st, int* status_all)
+static int get_outpart(const struct ast_str* const fullkey, int* partid, int* uid)
 {
-    int res = 0, partid, uid;
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_outgoingpart);
+
+    if ((res = bind_ast_str(get_outgoingpart, 1, fullkey)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(get_outgoingpart)) != SQLITE_ROW) {
+        return -1;
+    }
+
+    *partid = sqlite3_column_int(get_outgoingpart, 0);
+    *uid    = sqlite3_column_int(get_outgoingpart, 1);
+    return 0;
+}
+
+static int set_outpart(int st, int partid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(set_outgoingpart);
+
+    if ((res = sqlite3_bind_int(set_outgoingpart, 1, st)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind status to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_bind_int(set_outgoingpart, 2, partid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind ID to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(set_outgoingpart)) != SQLITE_DONE) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int cnt_outpart(int uid)
+{
+    int res;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(cnt_outgoingpart);
+
+    if ((res = sqlite3_bind_int(cnt_outgoingpart, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    if ((res = sqlite3_step(cnt_outgoingpart)) != SQLITE_ROW) {
+        return -1;
+    }
+
+    const int cur = sqlite3_column_int(cnt_outgoingpart, 0);
+    const int cnt = sqlite3_column_int(cnt_outgoingpart, 1);
+    if (cur != cnt) {
+        return -2;
+    }
+
+    return 0;
+}
+
+static int get_all_stats(int uid, int* status_all)
+{
+    int res, i = 0;
+
+    SCOPED_DB(smsdb);
+    SCOPED_STMT(get_all_status);
+
+    if ((res = sqlite3_bind_int(get_all_status, 1, uid)) != SQLITE_OK) {
+        ast_log(LOG_WARNING, "Couldn't bind key to stmt: [%d] %s\n", res, sqlite3_errmsg(smsdb));
+        return -1;
+    }
+
+    while ((res = sqlite3_step(get_all_status)) == SQLITE_ROW) {
+        status_all[i++] = sqlite3_column_int(get_all_status, 0);
+    }
+    status_all[i] = -1;
+    return (res == SQLITE_DONE) ? 0 : -1;
+}
+
+int smsdb_outgoing_part_status(const char* id, const char* addr, int mr, int st, int* status_all)
+{
+    int partid = -1, uid = -1;
 
     RAII_VAR(struct ast_str*, fullkey, ast_str_create(DBKEY_DEF_LEN), ast_free);
-    const int fullkey_len = ast_str_set(&fullkey, 0, "%s/%s/%d", id, addr, mr);
-    if (fullkey_len < 0) {
-        ast_log(LOG_ERROR, "Key length must be less than %zu bytes\n", sizeof(fullkey));
+    if (ast_str_set(&fullkey, 0, "%s/%s/%d", id, addr, mr) < 0) {
+        ast_log(LOG_ERROR, "Fail to create key\n");
         return -1;
     }
 
     SCOPED_TRANSACTION(dbtrans);
 
-    {
-        SCOPED_STMT(get_outgoingpart);
-        if (bind_ast_str(get_outgoingpart, 1, fullkey) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(get_outgoingpart) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            partid = sqlite3_column_int(get_outgoingpart, 0);
-            uid    = sqlite3_column_int(get_outgoingpart, 1);
-        }
+    if (get_outpart(fullkey, &partid, &uid)) {
+        return -1;
     }
 
-    // set status
-    if (res >= 0) {
-        SCOPED_STMT(set_outgoingpart);
-        if (sqlite3_bind_int(set_outgoingpart, 1, st) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind status to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_bind_int(set_outgoingpart, 2, partid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind ID to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(set_outgoingpart) != SQLITE_DONE) {
-            res = -1;
-        }
+    if (set_outpart(st, partid)) {
+        return -1;
     }
 
-    // get count
-    if (res >= 0) {
-        SCOPED_STMT(cnt_outgoingpart);
-        if (sqlite3_bind_int(cnt_outgoingpart, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else if (sqlite3_step(cnt_outgoingpart) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            const int cur = sqlite3_column_int(cnt_outgoingpart, 0);
-            const int cnt = sqlite3_column_int(cnt_outgoingpart, 1);
-            if (cur != cnt) {
-                res = -2;
-            }
-        }
+    if (cnt_outpart(uid)) {
+        return -1;
     }
 
-    // get status array
-    if (res >= 0) {
-        int i = 0;
-        SCOPED_STMT(get_all_status);
-        if (sqlite3_bind_int(get_all_status, 1, uid) != SQLITE_OK) {
-            ast_log(LOG_WARNING, "Couldn't bind key to stmt: %s\n", sqlite3_errmsg(smsdb));
-            res = -1;
-        } else {
-            while (sqlite3_step(get_all_status) == SQLITE_ROW) {
-                status_all[i++] = sqlite3_column_int(get_all_status, 0);
-            }
-        }
-        status_all[i] = -1;
+    if (get_all_stats(uid, status_all)) {
+        return -1;
     }
 
     // clear if everything is finished
-    if (res >= 0 && smsdb_outgoing_clear_nolock(uid) < 0) {
-        res = -1;
+    if (smsdb_outgoing_clear_nolock(uid)) {
+        return -1;
     }
 
-    return res;
+    return 0;
 }
 
-ssize_t smsdb_outgoing_purge_one(int* uid, struct ast_str** dst, struct ast_str** msg)
+static int get_outmsg_expired(int* uid, struct ast_str** dst, struct ast_str** msg)
 {
-    int res = -1;
+    int res;
 
+    SCOPED_STMT(get_outgoingmsg_expired);
+
+    if ((res = sqlite3_step(get_outgoingmsg_expired)) != SQLITE_ROW) {
+        return -1;
+    }
+
+    *uid = sqlite3_column_int(get_outgoingmsg_expired, 0);
+    res  = set_ast_str(get_outgoingmsg_expired, 1, dst);
+    res  = set_ast_str(get_outgoingmsg_expired, 2, msg);
+    return 0;
+}
+
+int smsdb_outgoing_purge_one(int* uid, struct ast_str** dst, struct ast_str** msg)
+{
     SCOPED_TRANSACTION(dbtrans);
 
-    {
-        SCOPED_STMT(get_outgoingmsg_expired);
-        if (sqlite3_step(get_outgoingmsg_expired) != SQLITE_ROW) {
-            res = -1;
-        } else {
-            *uid = sqlite3_column_int(get_outgoingmsg_expired, 0);
-            set_ast_str(get_outgoingmsg_expired, 1, dst);
-            set_ast_str(get_outgoingmsg_expired, 2, msg);
-        }
+    if (get_outmsg_expired(uid, dst, msg)) {
+        return -1;
     }
 
-    if (res >= 0 && smsdb_outgoing_clear_nolock(*uid) < 0) {
-        res = -1;
+    if (smsdb_outgoing_clear_nolock(*uid)) {
+        return -1;
     }
 
-    return res;
+    return 0;
 }
 
 int smsdb_vacuum_into(const char* backup_file)

@@ -1,0 +1,10 @@
+.vscode
+.task
+*.swp
+build
+install
+package
+CMakeUserPresets.json
+.env
+asterisk-headers.tar
+asterisk-headers.tar.gz

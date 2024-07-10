@@ -13,7 +13,7 @@ on:
 
 env:
   BUILD_TYPE: Release
-  OWRTVER: 23.05.2
+  OWRTVER: 23.05.3
   UBUNTU_DISTRO: ubuntu22.04
 
 jobs:
@@ -21,10 +21,10 @@ jobs:
     name: Formatting Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: jidicula/clang-format-action@v4.11.0
       with:
-        clang-format-version: 17
+        clang-format-version: 18
         check-path: src
 
   pre-build:
@@ -32,7 +32,7 @@ jobs:
     needs: formatting-check
     steps:
     - name: Checkout actions
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         sparse-checkout: .github/actions
         sparse-checkout-cone-mode: false
@@ -42,7 +42,7 @@ jobs:
     needs: pre-build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     - uses: ./.github/actions/install-required-packages
@@ -103,7 +103,7 @@ jobs:
         arch: [armv7, aarch64]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     - uses: ./.github/actions/install-required-packages
@@ -222,7 +222,7 @@ jobs:
             eabi: true
     steps:
     - name: Checkout actions
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         sparse-checkout: |
           .github/actions
@@ -235,17 +235,17 @@ jobs:
         target: ${{ matrix.target }}
         arch: ${{ matrix.arch }}
         eabi: ${{ matrix.eabi }}
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         path: asterisk-modules/asterisk-chan-quectel
     - name: Configure project
-      run: cmake -P asterisk-modules/asterisk-chan-quectel/make-build-dir.cmake
+      run: cmake -P asterisk-modules/asterisk-chan-quectel/configure-openwrt-makefile.cmake
     - name: Generate OpenWRT Makefile
       run: cmake -P asterisk-modules/asterisk-chan-quectel/install-openwrt-makefile.cmake
     - name: Check OpenWRT SDK config file existience
       id: check-owrt-cfg
-      uses: andstor/file-existence-action@v2
+      uses: andstor/file-existence-action@v3
       with:
         files: "owrtsdk/${{ matrix.target }}/.config"
     - name: Prepare OpenWRT SDK (symlink)

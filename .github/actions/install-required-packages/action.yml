@@ -7,8 +7,8 @@ runs:
       uses: awalsh128/cache-apt-pkgs-action@latest
       with:
         packages: |
-          git wget
-          build-essential python2
+          git wget jq
+          build-essential dpkg-dev python2
           libasound2-dev libsqlite3-dev asterisk-dev
   
     - name: Git configuration
